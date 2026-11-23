@@ -43,6 +43,8 @@ pub struct Config {
     pub exclude: String,
     pub custom_search: String,
     pub custom_extract: String,
+    /// After the crawl, test what AI crawlers can fetch (see [`crate::ai_search`]).
+    pub ai_bots: bool,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             exclude: String::new(),
             custom_search: String::new(),
             custom_extract: String::new(),
+            ai_bots: true,
         }
     }
 }
@@ -163,6 +166,7 @@ struct Shared {
     exclude: Option<Regex>,
     custom_search: Option<Regex>,
     custom_extract: Option<Regex>,
+    ai_sample: crate::ai_search::Sampler,
     tx: Sender<Event>,
 }
 
@@ -228,6 +232,7 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         robots: Mutex::new(HashMap::new()),
         internal_hosts: std::sync::RwLock::new(internal_hosts),
         root_domain,
+        ai_sample: Default::default(),
         tx,
     });
 
@@ -250,7 +255,7 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         let _ = sh.tx.send(Event::Finished);
         return;
     };
-    let _ = sh.tx.send(Event::Site(Box::new(site)));
+    let _ = sh.tx.send(Event::Site(Box::new(site.clone())));
 
     {
         let mut q = sh.queue.lock().unwrap();
@@ -284,7 +289,56 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         drop(q);
         run_workers(&sh);
     }
+    if sh.cfg.ai_bots && !sh.stop.load(Ordering::Relaxed) {
+        ai_phase(&sh, site);
+    }
     let _ = sh.tx.send(Event::Finished);
+}
+
+/// Test what AI crawlers can fetch on the start page and the most-linked indexable pages, then
+/// resend the site info with the results. Runs on its own thread so a stop is still prompt.
+fn ai_phase(sh: &Arc<Shared>, mut site: SiteInfo) {
+    let urls = {
+        let q = sh.queue.lock().unwrap();
+        sh.ai_sample.pick(q.seen.iter(), 5)
+    };
+    let Some(home) = urls.first().and_then(|u| Url::parse(u).ok()) else {
+        return;
+    };
+    let _ = sh.tx.send(Event::Log(format!(
+        "Testing AI crawler access on {} page(s)",
+        urls.len()
+    )));
+    let job = {
+        let sh = sh.clone();
+        thread::spawn(move || {
+            let robots = robots_for(&sh, &home);
+            let fetch = |url: &str, ua: Option<&str>| {
+                fetch_once(&sh, url, false, HTML_LIMIT, ACCEPT_HTML, ua).map(|r| {
+                    let ct = header(&r.headers, "content-type").unwrap_or_default();
+                    crate::ai_search::Fetched {
+                        status: r.status,
+                        body: decode_body(&r.body, &ct),
+                        headers: r.headers,
+                    }
+                })
+            };
+            crate::ai_search::test_bots(
+                &urls,
+                robots.as_deref(),
+                &fetch,
+                &sh.stop,
+                &sh.pause,
+                sh.cfg.threads,
+            )
+        })
+    };
+    if wait_or_stop(sh, std::slice::from_ref(&job)) && !sh.stop.load(Ordering::Relaxed) {
+        if let Ok(report) = job.join() {
+            site.ai_bots = Some(report);
+            let _ = sh.tx.send(Event::Site(Box::new(site)));
+        }
+    }
 }
 
 fn path_and_query(url: &Url) -> String {
@@ -418,6 +472,9 @@ fn worker(sh: Arc<Shared>) {
                     page.status_text = "Internal error while processing this URL".into();
                     (page, Vec::new())
                 });
+        if sh.cfg.ai_bots {
+            sh.ai_sample.note(&page);
+        }
         let crawled = sh.crawled.fetch_add(1, Ordering::Relaxed) + 1;
         let (queued, active) = {
             let mut q = sh.queue.lock().unwrap();
@@ -514,7 +571,7 @@ fn fetch_as(
 ) -> Result<Response, String> {
     // 429 means this crawl is being rate limited: back off (honouring Retry-After) and retry.
     for _ in 0..2 {
-        let r = fetch_once(sh, url, head, limit, accept)?;
+        let r = fetch_once(sh, url, head, limit, accept, None)?;
         if r.status != 429 || sh.stop.load(Ordering::Relaxed) {
             return Ok(r);
         }
@@ -525,7 +582,7 @@ fn fetch_as(
         let mut next = sh.next_slot.lock().unwrap();
         *next = (*next).max(Instant::now() + Duration::from_secs(secs));
     }
-    fetch_once(sh, url, head, limit, accept)
+    fetch_once(sh, url, head, limit, accept, None)
 }
 
 fn fetch_once(
@@ -534,6 +591,7 @@ fn fetch_once(
     head: bool,
     limit: usize,
     accept: &str,
+    user_agent: Option<&str>,
 ) -> Result<Response, String> {
     throttle(sh);
     let t0 = Instant::now();
@@ -541,6 +599,10 @@ fn fetch_once(
         sh.client.head(url)
     } else {
         sh.client.get(url)
+    };
+    let req = match user_agent {
+        Some(ua) => req.header("User-Agent", ua),
+        None => req,
     };
     let resp = req
         .header("Accept", accept)

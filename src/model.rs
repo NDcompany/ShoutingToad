@@ -169,6 +169,9 @@ pub struct HtmlData {
     pub uses_plugins: bool,
     pub aria_hidden_body: bool,
     pub generic_anchor_links: usize,
+    /// AI crawler meta tags and section quotability.
+    #[serde(default)]
+    pub ai: crate::ai_search::AiData,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -400,6 +403,9 @@ pub struct SiteInfo {
     pub http_redirects_to_https: Option<bool>,
     /// The www / non-www alternate host redirects to the start host.
     pub alt_host_redirects: Option<bool>,
+    /// AI crawler access test (None when it was not run).
+    #[serde(default)]
+    pub ai_bots: Option<crate::ai_search::AiBotReport>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

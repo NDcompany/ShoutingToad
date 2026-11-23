@@ -50,6 +50,7 @@ pub const CATEGORIES: &[&str] = &[
     "Accessibility",
     "Validation",
     "AMP",
+    "AI Search",
 ];
 
 fn t<F: Fn(&Page, &Ctx<'_>) -> bool + Send + Sync + 'static>(f: F) -> Test {
@@ -516,6 +517,14 @@ fn valid_iso_date(s: &str) -> bool {
 
 // ---------------------------------------------------------------- catalogue
 
+mod ai_search;
+
+/// Almost no text in the HTML but heavy scripts: the content probably appears only after
+/// JavaScript runs.
+fn js_rendered(h: &HtmlData) -> bool {
+    h.word_count < 50 && (h.scripts.len() >= 3 || h.inline_script_bytes > 30_000)
+}
+
 fn build() -> Vec<Check> {
     let mut v: Vec<Check> = Vec::with_capacity(460);
     response_codes(&mut v);
@@ -539,6 +548,7 @@ fn build() -> Vec<Check> {
     performance(&mut v);
     mobile_accessibility(&mut v);
     validation(&mut v);
+    ai_search::ai_search(&mut v);
     v
 }
 
@@ -4172,7 +4182,7 @@ fn resources(v: &mut Vec<Check>) {
     add!(v, "resources.js_rendered", CAT, Warning, Medium, "Content Likely Rendered by JavaScript",
         "The HTML has almost no text but heavy scripts, so the content probably appears only after JavaScript runs. Rendering is delayed and not guaranteed for every crawler.",
         "Server-render or pre-render the main content.",
-        |p, _| ihd(p).is_some_and(|h| h.word_count < 50 && (h.scripts.len() >= 3 || h.inline_script_bytes > 30_000)));
+        |p, _| ihd(p).is_some_and(js_rendered));
     add!(
         v,
         "resources.many_third_party",

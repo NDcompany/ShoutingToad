@@ -78,13 +78,18 @@ impl Robots {
     /// Groups for `agent` (lower-case product token), falling back to `*`. RFC 9309:
     /// several groups naming the same agent are combined.
     fn groups_for(&self, agent: &str) -> Vec<&Group> {
+        self.groups_matching(|a| agent.contains(a))
+    }
+
+    /// Groups whose user-agent line satisfies `names` (lower-case), falling back to `*`.
+    fn groups_matching(&self, names: impl Fn(&str) -> bool) -> Vec<&Group> {
         let named: Vec<&Group> = self
             .groups
             .iter()
             .filter(|g| {
                 g.agents
                     .iter()
-                    .any(|a| a != "*" && !a.is_empty() && agent.contains(a.as_str()))
+                    .any(|a| a != "*" && !a.is_empty() && names(a.as_str()))
             })
             .collect();
         if !named.is_empty() {
@@ -107,8 +112,19 @@ impl Robots {
 
     /// `path` is the URL path plus query (e.g. `/a/b?c=1`).
     pub fn is_allowed(&self, path: &str, agent: &str) -> bool {
+        Self::allowed_by(self.groups_for(agent), path)
+    }
+
+    /// Like [`Robots::is_allowed`] for an exact product token, as RFC 9309 matches it: a
+    /// `GPTBot` group does not apply to `ChatGPT-User`, nor `Applebot` to `Applebot-Extended`.
+    pub fn is_allowed_token(&self, path: &str, token: &str) -> bool {
+        let token = token.to_ascii_lowercase();
+        Self::allowed_by(self.groups_matching(|a| a == token), path)
+    }
+
+    fn allowed_by(groups: Vec<&Group>, path: &str) -> bool {
         let mut best: Option<(usize, bool)> = None;
-        for (allow, pat) in self.groups_for(agent).into_iter().flat_map(|g| &g.rules) {
+        for (allow, pat) in groups.into_iter().flat_map(|g| &g.rules) {
             if pattern_matches(pat, path) {
                 let len = pat.len();
                 match best {
@@ -219,6 +235,27 @@ Disallow: /dir/
         ] {
             assert_eq!(r.is_allowed(path, "x"), allowed, "{path}");
         }
+    }
+
+    #[test]
+    fn exact_tokens_for_ai_crawlers() {
+        let r = Robots::parse(
+            "User-agent: Applebot
+Allow: /
+
+User-agent: Applebot-Extended
+User-agent: GPTBot
+Disallow: /
+
+User-agent: *
+Disallow: /private
+",
+        );
+        assert!(r.is_allowed_token("/", "Applebot"));
+        assert!(!r.is_allowed_token("/", "Applebot-Extended"));
+        assert!(!r.is_allowed_token("/", "GPTBot"));
+        assert!(r.is_allowed_token("/", "ChatGPT-User"));
+        assert!(!r.is_allowed_token("/private/x", "ChatGPT-User"));
     }
 
     #[test]
