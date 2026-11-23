@@ -21,10 +21,10 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
-          - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -36,6 +36,16 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        # The Intel macOS build is cross-compiled on an Apple Silicon runner, so it isn't run here.
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/shouting-toad
+          "$bin" --version
+          "$bin" crawl https://example.com --max-urls 5 --out smoke --quiet
+          test -s smoke/report.html && test -s smoke/issues.csv
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
