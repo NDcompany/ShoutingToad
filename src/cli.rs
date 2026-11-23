@@ -127,6 +127,13 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter(|l| match crawler::normalize_url(l) {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!("warning: skipping {e}");
+                    false
+                }
+            })
             .collect()
     } else {
         vec![target.clone()]

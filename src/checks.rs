@@ -80,8 +80,13 @@ fn no_response(p: &Page) -> bool {
     p.status == 0 && !p.blocked_by_robots && p.error.is_some()
 }
 
+/// Error response or no response. 429 is rate limiting of this crawl, not a broken URL
+/// (it is reported on its own under Response Codes).
+/// A Cloudflare bot challenge (cf-mitigated: challenge) is shown to crawlers, not visitors.
 fn broken(x: &Ctx, url: &str) -> bool {
-    x.page(url).is_some_and(|t| !t.blocked_by_robots && (t.status >= 400 || no_response(t)))
+    x.page(url).is_some_and(|t| {
+        !t.blocked_by_robots && ((t.status >= 400 && t.status != 429 && t.header("cf-mitigated").is_none()) || no_response(t))
+    })
 }
 
 fn redirecting(x: &Ctx, url: &str) -> bool {
@@ -117,8 +122,16 @@ fn all_caps(s: &str) -> bool {
 
 fn stuffed(s: &str) -> bool {
     let mut counts: HashMap<String, usize> = HashMap::new();
+    const STOP: &[&str] = &[
+        "what", "that", "this", "with", "from", "your", "have", "will", "they", "them", "their", "there", "when", "which",
+        "were", "been", "than", "then", "into", "more", "most", "also", "just", "only", "over", "some", "such", "about",
+        "each", "other", "these", "those", "does", "here", "where", "while", "would", "could", "should",
+    ];
     for w in s.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 4) {
-        *counts.entry(w.to_lowercase()).or_insert(0) += 1;
+        let w = w.to_lowercase();
+        if !STOP.contains(&w.as_str()) {
+            *counts.entry(w).or_insert(0) += 1;
+        }
     }
     counts.values().any(|&c| c >= 3)
 }
@@ -134,12 +147,38 @@ fn double_encoded(s: &str) -> bool {
     ["&amp;", "&quot;", "&#", "&nbsp;", "&lt;", "&gt;", "&apos;"].iter().any(|e| s.contains(e))
 }
 
+/// File name of an image without extension, size/density suffixes and theme
+/// variants, so logo-light-96.webp, logo-dark-96.webp and logo.png?width=300 all
+/// count as the same picture.
+fn image_stem(u: &str) -> String {
+    const VARIANT: &[&str] = &["light", "dark", "white", "black", "mobile", "desktop", "retina", "small", "large", "thumb", "sm", "md", "lg", "xl"];
+    let path = path_of(u);
+    let name = path.rsplit('/').next().unwrap_or("");
+    let stem = name.rsplit_once('.').map(|(n, _)| n).unwrap_or(name).to_ascii_lowercase();
+    let s = stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty() && !VARIANT.contains(t))
+        .filter(|t| !t.trim_end_matches('x').chars().all(|c| c.is_ascii_digit() || c == 'x'))
+        .collect::<Vec<_>>()
+        .join("-");
+    if s.is_empty() {
+        path
+    } else {
+        s
+    }
+}
+
 fn header_has(p: &Page, name: &str) -> bool {
     p.header(name).is_some()
 }
 
 fn cookies(p: &Page) -> Vec<String> {
     p.headers_all("set-cookie").map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// Cookie (lower-cased Set-Cookie value) carries attribute `name`; the name=value pair itself is skipped.
+fn cookie_attr(c: &str, name: &str) -> bool {
+    c.split(';').skip(1).any(|a| a.split('=').next().unwrap_or("").trim() == name)
 }
 
 fn csp(p: &Page) -> String {
@@ -318,6 +357,33 @@ fn sd_present(v: &Value, prop: &str) -> bool {
         Some(Value::Object(o)) => !o.is_empty(),
         Some(_) => true,
     }
+}
+
+/// A bare node reference such as {"@type": "Organization", "@id": "…/#org"}: the
+/// entity is described elsewhere, so missing properties here are not errors.
+fn sd_ref(v: &Value) -> bool {
+    v.get("@id").is_some() && v.as_object().is_some_and(|o| o.keys().all(|k| k.starts_with('@')))
+}
+
+/// `prop` is set on `v` or on another node of the page with the same @id.
+fn sd_has(items: &[&Value], v: &Value, prop: &str) -> bool {
+    sd_present(v, prop)
+        || v.get("@id").and_then(|i| i.as_str()).is_some_and(|id| {
+            items.iter().any(|o| o.get("@id").and_then(|x| x.as_str()) == Some(id) && sd_present(o, prop))
+        })
+}
+
+/// Offers that belong to a Product (its `offers` property).
+fn product_offers<'v>(items: &[&'v Value]) -> Vec<&'v Value> {
+    items
+        .iter()
+        .filter(|i| type_names(i).iter().any(|t| t == "Product" || t == "ProductGroup"))
+        .filter_map(|i| i.get("offers"))
+        .flat_map(|o| match o {
+            Value::Array(a) => a.iter().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect()
 }
 
 fn valid_iso_date(s: &str) -> bool {
@@ -619,15 +685,15 @@ fn security(v: &mut Vec<Check>) {
     add!(v, "security.cookie_not_secure", CAT, Warning, Medium, "Cookie Without Secure Flag",
         "Cookies set on HTTPS pages without the Secure flag can be sent over plain HTTP.",
         "Add the Secure attribute to every cookie.",
-        |p, _| p.is_internal && p.is_https() && cookies(p).iter().any(|c| !c.contains("secure")));
+        |p, _| ih(p) && p.is_https() && cookies(p).iter().any(|c| !cookie_attr(c, "secure")));
     add!(v, "security.cookie_not_httponly", CAT, Warning, Low, "Cookie Without HttpOnly Flag",
         "Cookies readable from JavaScript can be stolen through XSS.",
         "Add HttpOnly to cookies that scripts do not need.",
-        |p, _| p.is_internal && cookies(p).iter().any(|c| !c.contains("httponly")));
+        |p, _| ih(p) && cookies(p).iter().any(|c| !cookie_attr(c, "httponly")));
     add!(v, "security.cookie_no_samesite", CAT, Warning, Low, "Cookie Without SameSite",
         "Cookies without a SameSite attribute are more exposed to cross-site request forgery.",
         "Set SameSite=Lax (or Strict) on cookies.",
-        |p, _| p.is_internal && cookies(p).iter().any(|c| !c.contains("samesite")));
+        |p, _| ih(p) && cookies(p).iter().any(|c| !cookie_attr(c, "samesite")));
     add!(v, "security.http_not_redirected", CAT, Issue, High, "HTTP Version Not Redirected to HTTPS",
         "The http:// version of the site answers without redirecting to https://, creating duplicate, insecure copies.",
         "301-redirect all HTTP requests to HTTPS.",
@@ -1049,8 +1115,8 @@ fn images(v: &mut Vec<Check>) {
         "Different images on the page share identical alt text.",
         "Describe each image individually.",
         |p, _| hd(p).is_some_and(|h| {
-            let mut seen: HashMap<&str, &str> = HashMap::new();
-            h.images.iter().filter_map(|i| i.alt.as_deref().filter(|a| a.len() > 3).map(|a| (a, i.url.as_str()))).any(|(a, u)| matches!(seen.insert(a, u), Some(prev) if prev != u))
+            let mut seen: HashMap<&str, String> = HashMap::new();
+            h.images.iter().filter_map(|i| i.alt.as_deref().filter(|a| a.len() > 3).map(|a| (a, image_stem(&i.url)))).any(|(a, u)| matches!(seen.insert(a, u.clone()), Some(prev) if prev != u))
         }));
     add!(v, "images.not_lazy", CAT, Opportunity, Low, "Images Not Lazy-Loaded",
         "The page has many images and the ones further down load immediately.",
@@ -1163,7 +1229,7 @@ fn canonicals(v: &mut Vec<Check>) {
     add!(v, "canonicals.unlinked", CAT, Warning, Low, "Unlinked Canonical Target",
         "The canonical URL gets no internal links, so you are telling search engines to prefer a page your site does not link to.",
         "Link to the canonical URL internally.",
-        |p, x| hd(p).is_some_and(|h| !canon(h).is_empty() && canon(h) != p.url && x.page(canon(h)).is_some_and(|t| x.inlinks_of(t).is_empty())));
+        |p, x| hd(p).is_some_and(|h| !canon(h).is_empty() && canon(h) != p.url && x.page(canon(h)).is_some_and(|t| !x.linked(t))));
 }
 
 fn pagination(v: &mut Vec<Check>) {
@@ -1244,12 +1310,12 @@ fn directives(v: &mut Vec<Check>) {
     add!(v, "directives.x_robots_noindex", CAT, Warning, High, "Noindex via X-Robots-Tag",
         "The HTTP header carries noindex. It is easy to miss because it is not in the HTML.",
         "Make sure the server rule setting this header is intended.",
-        |p, _| p.is_internal && p.status == 200 && p.headers_all("x-robots-tag").any(|v| { let l = v.to_ascii_lowercase(); l.contains("noindex") || l.contains("none") }));
+        |p, _| p.is_internal && p.status == 200 && p.headers_all("x-robots-tag").any(|v| v.to_ascii_lowercase().split([',', ';']).map(crate::model::directive_name).any(|d| d == "noindex" || d == "none")));
     add!(v, "directives.conflicting", CAT, Issue, High, "Conflicting Directives",
         "The page says both index and noindex, or follow and nofollow. Search engines apply the most restrictive one.",
         "Keep one consistent set of directives.",
         |p, _| ih(p) && {
-            let toks: HashSet<String> = p.robots_directives().split([',', ';']).map(|t| t.trim().rsplit(':').next().unwrap_or("").trim().to_string()).collect();
+            let toks: HashSet<String> = p.directive_names().into_iter().collect();
             (toks.contains("index") && toks.contains("noindex")) || (toks.contains("follow") && toks.contains("nofollow"))
         });
     add!(v, "directives.outside_head", CAT, Issue, High, "Robots Meta Outside <head>",
@@ -1370,7 +1436,7 @@ fn robots_and_sitemaps(v: &mut Vec<Check>) {
     add!(v, "sitemaps.client_error", SM, Issue, High, "Client Error (4xx) in Sitemap",
         "The sitemap lists broken URLs.",
         "Remove them or fix the pages.",
-        move |p, x| ins(p, x) && (400..500).contains(&p.status));
+        move |p, x| ins(p, x) && (400..500).contains(&p.status) && p.status != 429);
     add!(v, "sitemaps.server_error", SM, Issue, High, "Server Error (5xx) in Sitemap",
         "Sitemap URLs return server errors.",
         "Fix the server errors.",
@@ -1390,11 +1456,11 @@ fn robots_and_sitemaps(v: &mut Vec<Check>) {
     add!(v, "sitemaps.orphan", SM, Warning, Medium, "Orphan URL (in Sitemap, No Inlinks)",
         "Pages listed in the sitemap that no crawled page links to. They get little internal authority.",
         "Link to them from relevant pages, or remove them if obsolete.",
-        move |p, x| ins(p, x) && ih(p) && !x.is_start(p) && x.inlinks_of(p).is_empty());
+        move |p, x| ins(p, x) && ih(p) && !x.is_start(p) && !x.linked(p));
     add!(v, "sitemaps.missing_indexable", SM, Opportunity, Low, "Indexable Page Not in Sitemap",
         "Indexable pages missing from the sitemap.",
         "Add every indexable page to the sitemap.",
-        |p, x| x.has_sitemap() && indexable(p) && !x.in_sitemap(p));
+        |p, x| x.has_sitemap() && !x.crawl.site.sitemaps_partial && indexable(p) && !x.in_sitemap(p));
     add!(v, "sitemaps.http_url", SM, Warning, Medium, "HTTP URL in Sitemap",
         "An HTTPS site's sitemap lists http:// URLs.",
         "List the HTTPS versions.",
@@ -1577,6 +1643,7 @@ fn structured_data(v: &mut Vec<Check>) {
     for &(types, alts, required, label) in props {
         let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
         let alts: Vec<String> = alts.iter().map(|s| s.to_string()).collect();
+        let offer_rule = types == ["Offer"];
         let slug = label.to_lowercase().replace([':', ','], "").replace(' ', "_");
         let (kind, priority, what) = if required {
             (Kind::Issue, Priority::Medium, "required")
@@ -1592,10 +1659,24 @@ fn structured_data(v: &mut Vec<Check>) {
             description: format!("{} markup lacks the {what} property {}{}.", label.split(':').next().unwrap_or(label), alts.join(" / "),
                 if required { ", so it is not eligible for rich results" } else { ", which Google recommends for richer results" }),
             fix: format!("Add {} to the {} entity.", alts.join(" or "), label.split(':').next().unwrap_or(label)),
-            test: t(move |p, _| hd(p).is_some_and(|h| sd_items(h).iter().any(|i| {
-                let names = type_names(i);
-                names.iter().any(|n| types.contains(n)) && !alts.iter().any(|a| sd_present(i, a))
-            }))),
+            test: t(move |p, _| hd(p).is_some_and(|h| {
+                let items = sd_items(h);
+                // Google only requires Offer price data for Product offers; a service
+                // catalogue Offer without a price is valid.
+                // Recommended properties are judged on top-level entities only: a nested
+                // Organization (a client, a sourceOrganization) is an attribute, not the subject.
+                let candidates = if offer_rule {
+                    product_offers(&items)
+                } else if required {
+                    items.clone()
+                } else {
+                    sd_roots(h)
+                };
+                candidates.iter().any(|i| {
+                    let names = type_names(i);
+                    names.iter().any(|n| types.contains(n)) && !sd_ref(i) && !alts.iter().any(|a| sd_has(&items, i, a))
+                })
+            })),
         });
     }
 }
@@ -1702,7 +1783,7 @@ fn links(v: &mut Vec<Check>) {
     add!(v, "links.no_inlinks", CAT, Warning, Medium, "No Internal Inlinks",
         "No crawled page links to this URL, so search engines and visitors can barely find it.",
         "Link to it from relevant pages.",
-        |p, x| ih(p) && !x.is_start(p) && real(p) && x.inlinks_of(p).is_empty());
+        |p, x| ih(p) && !x.is_start(p) && real(p) && p.source != Some(Source::Seed) && !x.linked(p));
     add!(v, "links.single_inlink", CAT, Opportunity, Low, "Only One Followed Inlink",
         "The page has a single followed internal link pointing at it.",
         "Add more contextual internal links to important pages.",
@@ -2066,6 +2147,64 @@ mod tests {
             assert!(CATEGORIES.contains(&check.category), "{} has unknown category {}", check.id, check.category);
             assert!(!check.description.is_empty() && !check.fix.is_empty(), "{} lacks text", check.id);
         }
+    }
+
+    /// Does check `id` fire on a single internal 200 page with this HTML and headers?
+    fn fires(id: &str, html: &str, headers: &[(&str, &str)]) -> bool {
+        let url = "https://example.com/page";
+        let page = Page {
+            id: 1,
+            url: url.into(),
+            source: Some(Source::Seed),
+            is_internal: true,
+            status: 200,
+            content_type: "text/html; charset=utf-8".into(),
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            html: Some(Box::new(crate::parse::parse_html(html, &Url::parse(url).unwrap()))),
+            ..Default::default()
+        };
+        let crawl = crate::model::Crawl { pages: vec![page], ..Default::default() };
+        let audit = crate::audit::run(&crawl);
+        !audit.hits[find(id).unwrap()].is_empty()
+    }
+
+    fn ld(json: &str) -> String {
+        format!("<html><head><script type=\"application/ld+json\">{json}</script></head><body></body></html>")
+    }
+
+    #[test]
+    fn json_ld_references_and_service_offers_are_not_errors() {
+        let graph = r#"{"@context":"https://schema.org","@graph":[
+            {"@type":"Organization","@id":"https://example.com/#org","name":"Co","url":"https://example.com/","logo":"https://example.com/l.png",
+             "hasOfferCatalog":{"@type":"OfferCatalog","itemListElement":[{"@type":"Offer","itemOffered":{"@type":"Service","name":"Design"}}]}},
+            {"@type":"WebPage","publisher":{"@type":"Organization","@id":"https://example.com/#org"},"isPartOf":{"@type":"WebSite","@id":"https://example.com/#site"}}]}"#;
+        for id in ["sd.organization_name", "sd.organization_url", "sd.organization_logo", "sd.website_name", "sd.offer_price", "sd.offer_pricecurrency"] {
+            assert!(!fires(id, &ld(graph), &[]), "{id} fired");
+        }
+        let product = r#"{"@context":"https://schema.org","@type":"Product","name":"Van","offers":{"@type":"Offer","availability":"InStock"}}"#;
+        assert!(fires("sd.offer_price", &ld(product), &[]));
+        assert!(fires("sd.offer_pricecurrency", &ld(product), &[]));
+    }
+
+    #[test]
+    fn theme_variants_of_one_image_share_alt() {
+        let same = r#"<html><body><img src="/logo-light-96.webp" alt="Acme Logo"><img src="/logo-dark-96.webp" alt="Acme Logo"></body></html>"#;
+        assert!(!fires("images.duplicate_alt", same, &[]));
+        let diff = r#"<html><body><img src="/van-front.jpg" alt="Our van"><img src="/van-back.jpg" alt="Our van"></body></html>"#;
+        assert!(fires("images.duplicate_alt", diff, &[]));
+    }
+
+    #[test]
+    fn cookie_attributes_are_parsed_not_substring_matched() {
+        let html = "<html><body></body></html>";
+        assert!(fires("security.cookie_not_secure", html, &[("set-cookie", "insecure_pref=1; Path=/; HttpOnly; SameSite=Lax")]));
+        assert!(!fires("security.cookie_not_secure", html, &[("set-cookie", "a=1; Path=/; Secure; HttpOnly; SameSite=Lax")]));
+    }
+
+    #[test]
+    fn stopwords_are_not_keyword_stuffing() {
+        assert!(!stuffed("What changed, what Google says and what recovery costs"));
+        assert!(stuffed("Cheap vans, cheap van parts, cheap van builds"));
     }
 
     #[test]

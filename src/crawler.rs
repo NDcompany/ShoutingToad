@@ -121,7 +121,15 @@ struct Job {
 struct Queue {
     jobs: VecDeque<Job>,
     seen: HashSet<String>,
+    /// robots.txt and sitemap files in `seen`; they do not count against max_urls.
+    meta: usize,
     active: usize,
+}
+
+impl Queue {
+    fn full(&self, max: usize) -> bool {
+        self.seen.len() - self.meta >= max
+    }
 }
 
 struct Shared {
@@ -137,7 +145,8 @@ struct Shared {
     ids: AtomicUsize,
     crawled: AtomicUsize,
     robots: Mutex<HashMap<String, Option<Robots>>>,
-    internal_hosts: Vec<String>,
+    /// Grows when the start URL redirects to its www / non-www twin.
+    internal_hosts: std::sync::RwLock<Vec<String>>,
     root_domain: String,
     include: Option<Regex>,
     exclude: Option<Regex>,
@@ -188,7 +197,7 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         cfg,
         list_mode,
         client,
-        queue: Mutex::new(Queue { jobs: VecDeque::new(), seen: HashSet::new(), active: 0 }),
+        queue: Mutex::new(Queue { jobs: VecDeque::new(), seen: HashSet::new(), meta: 0, active: 0 }),
         cv: Condvar::new(),
         stop: stop.clone(),
         pause: pause.clone(),
@@ -196,7 +205,7 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         ids: AtomicUsize::new(1),
         crawled: AtomicUsize::new(0),
         robots: Mutex::new(HashMap::new()),
-        internal_hosts,
+        internal_hosts: std::sync::RwLock::new(internal_hosts),
         root_domain,
         tx,
     });
@@ -206,8 +215,13 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
 }
 
 fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
-    let start = seeds[0].clone();
+    let mut start = seeds[0].clone();
     let mut site = SiteInfo::default();
+    if !sh.list_mode {
+        if let Some(fin) = resolve_start(&sh, &start) {
+            start = fin;
+        }
+    }
 
     // robots.txt + sitemaps for the primary host, before any page is fetched
     let robots = fetch_robots(&sh, &start, true, &mut site);
@@ -234,7 +248,7 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
     if sh.cfg.crawl_sitemaps && !sh.stop.load(Ordering::Relaxed) {
         let mut q = sh.queue.lock().unwrap();
         for u in &sitemap_urls {
-            if q.seen.len() >= sh.cfg.max_urls {
+            if q.full(sh.cfg.max_urls) {
                 break;
             }
             if is_internal(&sh, u) && q.seen.insert(u.clone()) {
@@ -245,6 +259,35 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         run_workers(&sh);
     }
     let _ = sh.tx.send(Event::Finished);
+}
+
+/// Follow the start URL's redirects. When it lands on the same site (http -> https,
+/// bare -> www or the reverse), that host is internal too and site-wide checks
+/// (robots.txt, sitemaps, host variants) run against it.
+fn resolve_start(sh: &Shared, start: &Url) -> Option<Url> {
+    let bare = |u: &Url| u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
+    let mut cur = start.clone();
+    for _ in 0..5 {
+        let r = fetch(sh, cur.as_str(), false, 64 * 1024).ok()?;
+        if !(300..400).contains(&r.status) {
+            break;
+        }
+        let next = cur.join(header(&r.headers, "location")?.trim()).ok()?;
+        if bare(&next) != bare(start) {
+            return None;
+        }
+        cur = next;
+    }
+    if cur == *start {
+        return None;
+    }
+    if let Some(h) = cur.host_str() {
+        let mut hosts = sh.internal_hosts.write().unwrap();
+        if !hosts.iter().any(|x| x == h) {
+            hosts.push(h.to_string());
+        }
+    }
+    Some(cur)
 }
 
 fn run_workers(sh: &Arc<Shared>) {
@@ -290,7 +333,7 @@ fn worker(sh: Arc<Shared>) {
         let (queued, active) = {
             let mut q = sh.queue.lock().unwrap();
             for d in discovered {
-                if q.seen.len() >= sh.cfg.max_urls {
+                if q.full(sh.cfg.max_urls) {
                     break;
                 }
                 if q.seen.insert(d.url.clone()) {
@@ -310,16 +353,13 @@ fn is_internal(sh: &Shared, url: &str) -> bool {
     let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string())) else {
         return false;
     };
-    if sh.internal_hosts.iter().any(|h| *h == host) {
+    if sh.internal_hosts.read().unwrap().contains(&host) {
         return true;
     }
     sh.cfg.crawl_subdomains && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))
 }
 
 fn throttle(sh: &Shared) {
-    if sh.delay.is_zero() {
-        return;
-    }
     let wait = {
         let mut next = sh.next_slot.lock().unwrap();
         let now = Instant::now();
@@ -341,12 +381,35 @@ struct Response {
     encoding: String,
 }
 
+const ACCEPT_HTML: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+/// Browser image Accept header: CDNs (Shopify, Cloudflare, imgix…) negotiate
+/// WebP/AVIF from it, so sizes and formats match what visitors receive.
+const ACCEPT_IMAGE: &str = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
 fn fetch(sh: &Shared, url: &str, head: bool, limit: usize) -> Result<Response, String> {
+    fetch_as(sh, url, head, limit, ACCEPT_HTML)
+}
+
+fn fetch_as(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) -> Result<Response, String> {
+    // 429 means this crawl is being rate limited: back off (honouring Retry-After) and retry.
+    for _ in 0..2 {
+        let r = fetch_once(sh, url, head, limit, accept)?;
+        if r.status != 429 || sh.stop.load(Ordering::Relaxed) {
+            return Ok(r);
+        }
+        let secs = header(&r.headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(5).clamp(1, 30);
+        let mut next = sh.next_slot.lock().unwrap();
+        *next = (*next).max(Instant::now() + Duration::from_secs(secs));
+    }
+    fetch_once(sh, url, head, limit, accept)
+}
+
+fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) -> Result<Response, String> {
     throttle(sh);
     let t0 = Instant::now();
     let req = if head { sh.client.head(url) } else { sh.client.get(url) };
     let resp = req
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Accept", accept)
         .header("Accept-Encoding", "gzip, deflate, br")
         .send()
         .map_err(describe_error)?;
@@ -485,7 +548,10 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
         });
         if let Some(r) = &result {
             let page = resource_page(sh, &robots_url, 0, Source::Robots, true, r);
-            sh.queue.lock().unwrap().seen.insert(robots_url.clone());
+            let mut q = sh.queue.lock().unwrap();
+            if q.seen.insert(robots_url.clone()) {
+                q.meta += 1;
+            }
             let _ = sh.tx.send(Event::Page(Box::new(page)));
         }
     }
@@ -519,9 +585,16 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
     let mut urls: Vec<String> = Vec::new();
     let mut url_set: HashSet<String> = HashSet::new();
     while let Some((sm_url, in_robots)) = todo.pop_front() {
-        if done.len() >= MAX_SITEMAPS || !done.insert(sm_url.clone()) || sh.stop.load(Ordering::Relaxed) {
+        if done.contains(&sm_url) || sh.stop.load(Ordering::Relaxed) {
             continue;
         }
+        // A sitemap index can list hundreds of files. Once the crawl budget is covered,
+        // stop downloading them; checks that need the full list are skipped.
+        if done.len() >= MAX_SITEMAPS || urls.len() >= sh.cfg.max_urls {
+            site.sitemaps_partial = true;
+            continue;
+        }
+        done.insert(sm_url.clone());
         let resp = match fetch(sh, &sm_url, false, 60 * 1024 * 1024) {
             Ok(r) => r,
             Err(e) => {
@@ -534,7 +607,12 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
             continue;
         }
         let page = resource_page(sh, &sm_url, 0, Source::Sitemap, true, &resp);
-        sh.queue.lock().unwrap().seen.insert(sm_url.clone());
+        {
+            let mut q = sh.queue.lock().unwrap();
+            if q.seen.insert(sm_url.clone()) {
+                q.meta += 1;
+            }
+        }
         let _ = sh.tx.send(Event::Page(Box::new(page)));
         let mut info = SitemapInfo { url: sm_url.clone(), status: resp.status, in_robots, size: resp.body.len(), ..Default::default() };
         if resp.status == 200 {
@@ -712,11 +790,17 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
         // Status-only check. Some servers reject HEAD, so fall back to GET.
         // Some servers answer HEAD wrongly (404/405/403), so confirm any error with GET.
         let limit = if is_resource { RESOURCE_LIMIT } else { 256 * 1024 };
-        match fetch(sh, &job.url, true, 0) {
+        let accept = match job.source {
+            Source::Image => ACCEPT_IMAGE,
+            Source::Stylesheet => "text/css,*/*;q=0.1",
+            Source::Script => "*/*",
+            _ => ACCEPT_HTML,
+        };
+        match fetch_as(sh, &job.url, true, 0, accept) {
             Ok(r) if r.status >= 400 || (r.status == 200 && is_resource && header(&r.headers, "content-length").is_none()) => {
-                fetch(sh, &job.url, false, limit)
+                fetch_as(sh, &job.url, false, limit, accept)
             }
-            Err(_) => fetch(sh, &job.url, false, limit),
+            Err(_) => fetch_as(sh, &job.url, false, limit, accept),
             other => other,
         }
     };
