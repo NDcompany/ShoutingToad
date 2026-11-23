@@ -19,18 +19,31 @@ pub enum Source {
     Robots,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Links are most of a crawl file, so default fields are left out of it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Link {
     pub url: String,
     pub raw_href: String,
     pub anchor: String,
     /// Anchor came from an image alt attribute (image link).
+    #[serde(skip_serializing_if = "is_false")]
     pub image_link: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub nofollow: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub sponsored: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub ugc: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub target_blank: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub noopener: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fragment: Option<String>,
 }
 
@@ -211,20 +224,22 @@ impl Page {
     }
 
     pub fn kind(&self) -> &'static str {
-        let ct = self.content_type.to_ascii_lowercase();
-        if self.html.is_some() || ct.contains("html") {
+        let ct = self.content_type.as_bytes();
+        let has = |needle: &str| ct.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()));
+        let starts = |prefix: &str| ct.len() >= prefix.len() && ct[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+        if self.html.is_some() || has("html") {
             "HTML"
-        } else if ct.contains("javascript") || ct.contains("ecmascript") {
+        } else if has("javascript") || has("ecmascript") {
             "JavaScript"
-        } else if ct.contains("css") {
+        } else if has("css") {
             "CSS"
-        } else if ct.starts_with("image/") {
+        } else if starts("image/") {
             "Image"
-        } else if ct.contains("pdf") {
+        } else if has("pdf") {
             "PDF"
-        } else if ct.contains("xml") {
+        } else if has("xml") {
             "XML"
-        } else if ct.starts_with("text/plain") {
+        } else if starts("text/plain") {
             "Text"
         } else if self.status == 0 {
             "Unknown"
@@ -264,12 +279,16 @@ impl Page {
         parts.join(", ").to_ascii_lowercase()
     }
 
+    /// `d` must be lower-case. Same tokens as splitting [`Page::robots_directives`], without
+    /// allocating: this runs for every page in many checks and in the GUI filters.
     pub fn has_directive(&self, d: &str) -> bool {
-        self.robots_directives()
-            .split([',', ';'])
-            .map(|t| t.trim())
-            .map(|t| t.rsplit(':').next().unwrap_or(t).trim())
-            .any(|t| t == d)
+        let meta = self.html.iter().flat_map(|h| h.meta_robots.iter().chain(&h.meta_googlebot).map(|s| s.as_str()));
+        meta.chain(self.headers_all("x-robots-tag")).any(|part| {
+            part.split([',', ';'])
+                .map(|t| t.trim())
+                .map(|t| t.rsplit(':').next().unwrap_or(t).trim())
+                .any(|t| t.eq_ignore_ascii_case(d))
+        })
     }
 
     pub fn is_noindex(&self) -> bool {
@@ -331,13 +350,54 @@ pub struct Crawl {
 }
 
 impl Crawl {
+    /// Gzip-compressed JSON, streamed: a 50k-URL crawl is GBs of raw JSON but ~10x smaller packed.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let json = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))
+        use std::io::Write;
+        let err = |e: &dyn std::fmt::Display| format!("Could not write {}: {e}", path.display());
+        let file = std::fs::File::create(path).map_err(|e| err(&e))?;
+        let gz = flate2::write::GzEncoder::new(std::io::BufWriter::with_capacity(1 << 20, file), flate2::Compression::fast());
+        // serde_json writes a few bytes at a time; batch them before they reach the compressor.
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, gz);
+        serde_json::to_writer(&mut w, self).map_err(|e| err(&e))?;
+        let gz = w.into_inner().map_err(|e| err(&e.error()))?;
+        gz.finish().and_then(|mut w| w.flush()).map_err(|e| err(&e))
     }
 
+    /// Reads gzip-compressed or plain JSON crawl files.
     pub fn load(path: &std::path::Path) -> Result<Crawl, String> {
-        let data = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        use std::io::Read;
+        let mut data = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        if data.starts_with(&[0x1f, 0x8b]) {
+            let mut json = Vec::with_capacity(data.len() * 6);
+            flate2::read::MultiGzDecoder::new(&data[..])
+                .read_to_end(&mut json)
+                .map_err(|e| format!("{} is damaged: {e}", path.display()))?;
+            data = json;
+        }
         serde_json::from_slice(&data).map_err(|e| format!("{} is not a ShoutingToad crawl file: {e}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_load_round_trip_and_plain_json() {
+        let link = Link { url: "https://a.test/x".into(), nofollow: true, ..Default::default() };
+        let page = Page { url: "https://a.test/".into(), html: Some(Box::new(HtmlData { links: vec![link], ..Default::default() })), ..Default::default() };
+        let crawl = Crawl { start_url: "https://a.test/".into(), pages: vec![page], ..Default::default() };
+        let dir = std::env::temp_dir().join(format!("st-model-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (gz, plain) = (dir.join("c.shoutingtoad"), dir.join("old.shoutingtoad"));
+        crawl.save(&gz).unwrap();
+        std::fs::write(&plain, serde_json::to_vec(&crawl).unwrap()).unwrap();
+        for path in [&gz, &plain] {
+            let back = Crawl::load(path).unwrap();
+            let l = &back.pages[0].html.as_ref().unwrap().links[0];
+            assert!(l.nofollow && !l.sponsored && l.fragment.is_none());
+            assert_eq!(back.start_url, crawl.start_url);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

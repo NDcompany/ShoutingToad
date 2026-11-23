@@ -5,6 +5,8 @@ use crate::checks::{catalogue, find};
 use crate::crawler::{self, Config, Event};
 use crate::model::Crawl;
 use crate::report;
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -161,30 +163,42 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     }
     crawl.finished = chrono::Local::now().to_rfc3339();
     crawl.pages.sort_by_key(|p| p.id);
+    let crawl_secs = started.elapsed().as_secs_f32();
 
+    let t_audit = Instant::now();
     let audit = audit::run(&crawl);
+    let audit_secs = t_audit.elapsed().as_secs_f32();
+    let t_write = Instant::now();
     std::fs::create_dir_all(&out).map_err(|e| format!("could not create {}: {e}", out.display()))?;
     let write = |name: &str, data: String| -> Result<(), String> {
         std::fs::write(out.join(name), data).map_err(|e| format!("could not write {name}: {e}"))
     };
     write("report.html", report::html_report(&crawl, &audit, "", ""))?;
     write("issues.csv", report::issues_csv(&crawl, &audit))?;
-    write("issue_urls.csv", report::issue_urls_csv(&crawl, &audit))?;
-    write("internal.csv", report::internal_csv(&crawl, &audit))?;
-    write("inlinks.csv", report::inlinks_csv(&crawl, &audit))?;
-    write("outlinks.csv", report::outlinks_csv(&crawl))?;
-    write("images.csv", report::images_csv(&crawl))?;
-    write("redirects.csv", report::redirects_csv(&crawl))?;
+    // The per-URL and per-link exports reach hundreds of MB at 50k+ URLs: stream them to disk.
+    let stream = |name: &str, f: &dyn Fn(BufWriter<File>) -> std::io::Result<BufWriter<File>>| -> Result<(), String> {
+        let file = File::create(out.join(name)).map_err(|e| format!("could not write {name}: {e}"))?;
+        f(BufWriter::with_capacity(1 << 20, file)).map(drop).map_err(|e| format!("could not write {name}: {e}"))
+    };
+    stream("issue_urls.csv", &|w| report::issue_urls_csv_to(w, &crawl, &audit))?;
+    stream("internal.csv", &|w| report::internal_csv_to(w, &crawl, &audit))?;
+    stream("inlinks.csv", &|w| report::inlinks_csv_to(w, &crawl, &audit))?;
+    stream("outlinks.csv", &|w| report::outlinks_csv_to(w, &crawl))?;
+    stream("images.csv", &|w| report::images_csv_to(w, &crawl))?;
+    stream("redirects.csv", &|w| report::redirects_csv_to(w, &crawl))?;
     crawl.save(&out.join("crawl.shoutingtoad"))?;
+    let write_secs = t_write.elapsed().as_secs_f32();
 
     let cat = catalogue();
     let count = |k: Kind| audit.triggered().filter(|(i, _)| cat[*i].kind == k).count();
     println!(
-        "\nCrawled {} URLs in {:.1}s. Health score: {}/100",
+        "\nCrawled {} URLs in {:.1}s ({:.0} URLs/s). Health score: {}/100",
         crawl.pages.len(),
-        started.elapsed().as_secs_f32(),
+        crawl_secs,
+        crawl.pages.len() as f32 / crawl_secs.max(0.001),
         audit.health_score(&crawl)
     );
+    println!("Audit took {audit_secs:.1}s, writing reports took {write_secs:.1}s");
     println!(
         "{} issues, {} warnings, {} opportunities ({} checks run)",
         count(Kind::Issue),

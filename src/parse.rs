@@ -614,7 +614,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         }
         capped.truncate(cut);
     }
+    // Kept for the whole crawl: drop the spare capacity (the uncapped text can be 2x the cap).
+    capped.shrink_to_fit();
     d.text = capped;
+    d.links.shrink_to_fit();
+    d.images.shrink_to_fit();
     d
 }
 
