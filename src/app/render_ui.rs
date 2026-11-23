@@ -117,7 +117,11 @@ pub(super) fn rendered_tab(ui: &mut egui::Ui, p: &Page) {
                 ui,
                 "Links",
                 h.map(|h| h.links.len()).unwrap_or(0).to_string(),
-                format!("{} ({} only after rendering)", r.links, r.new_links_total),
+                if r.new_links_total == 0 {
+                    r.links.to_string()
+                } else {
+                    format!("{} ({} only after rendering)", r.links, r.new_links_total)
+                },
             );
             if r.final_url != p.url && !r.final_url.is_empty() {
                 row(ui, "URL", p.url.clone(), r.final_url.clone());

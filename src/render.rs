@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -526,6 +526,7 @@ impl Pool {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
+        sweep_stale_profiles();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {dir:?}: {e}"))?;
         let mut cmd = Command::new(&exe);
@@ -799,6 +800,34 @@ impl Pool {
         };
         if !remove(10) {
             std::thread::spawn(move || remove(100));
+        }
+    }
+}
+
+/// Remove temporary profiles left by a run that was killed (the browser itself died with it).
+/// Only profiles untouched for an hour, and on Linux only when their process is gone.
+fn sweep_stale_profiles() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let me = std::process::id().to_string();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name
+            .strip_prefix("shoutingtoad-chrome-")
+            .and_then(|r| r.split('-').next())
+        else {
+            continue;
+        };
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        let alive = cfg!(target_os = "linux") && Path::new("/proc").join(pid).exists();
+        if pid != me && old && !alive {
+            let _ = std::fs::remove_dir_all(e.path());
         }
     }
 }

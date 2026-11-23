@@ -1733,8 +1733,8 @@ impl App {
                 (Insp::Headers, "HTTP Headers".to_string()),
                 (Insp::Serp, "SERP Snippet".to_string()),
                 (Insp::Schema, format!("Structured Data ({})", h.map(|h| h.json_ld.len()).unwrap_or(0))),
-                (Insp::Rendered, "Raw vs Rendered".to_string()),
-                (Insp::Vitals, "Core Web Vitals".to_string()),
+                (Insp::Rendered, "Rendered".to_string()),
+                (Insp::Vitals, "CWV".to_string()),
             ];
             ui.add_space(4.0);
             ui.horizontal(|ui| {
