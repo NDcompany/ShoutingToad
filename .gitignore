@@ -15,3 +15,4 @@ test_exports/
 # crawl output
 *.shoutingtoad
 shoutingtoad-report/
+.claude/

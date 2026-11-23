@@ -1,20 +1,18 @@
-﻿# ShoutingToad Windows Uninstaller Script
+﻿# Remove ShoutingToad installed by install_windows.ps1.
 param(
     [string]$InstallDir = "$env:LOCALAPPDATA\Programs\ShoutingToad"
 )
 
-Write-Host "Uninstalling ShoutingToad..." -ForegroundColor Yellow
-
-# 1. Remove Shortcuts
-Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ShoutingToad" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ShoutingToad.lnk" -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:USERPROFILE\Desktop\ShoutingToad.lnk" -Force -ErrorAction SilentlyContinue
+Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShoutingToad' -Recurse -Force -ErrorAction SilentlyContinue
 
-# 2. Remove Registry Entry
-Remove-Item "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShoutingToad" -Recurse -Force -ErrorAction SilentlyContinue
-
-# 3. Remove Installed Files
-if (Test-Path $InstallDir) {
-    Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath) {
+    $kept = ($userPath -split ';') | Where-Object { $_ -and ($_ -ne $InstallDir) }
+    [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
 }
 
-Write-Host "✓ ShoutingToad has been completely removed." -ForegroundColor Green
+# The script may live inside the folder it deletes, so remove the folder last.
+if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'ShoutingToad has been removed.' -ForegroundColor Green

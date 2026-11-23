@@ -1,52 +1,65 @@
-﻿# ShoutingToad Windows Installer Script
-# Installs ShoutingToad, creates Start Menu shortcuts and registers clean uninstaller
+﻿# Install ShoutingToad for the current user (no administrator rights needed).
+#
+#   From a release zip:     powershell -ExecutionPolicy Bypass -File install_windows.ps1
+#   From a source checkout: cargo build --release; powershell -ExecutionPolicy Bypass -File installer\install_windows.ps1
+#
+# If no shouting-toad.exe is found next to this script (or in target\release), the latest release is downloaded.
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\ShoutingToad"
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\ShoutingToad",
+    [switch]$NoPath
 )
+$ErrorActionPreference = 'Stop'
+$Repo = 'NDcompany/ShoutingToad'
 
-Write-Host "Installing ShoutingToad by N&D Co. (ndcompany.in)..." -ForegroundColor Cyan
-
-# 1. Create directory
-if (!(Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+$candidates = @("$PSScriptRoot\shouting-toad.exe", "$PSScriptRoot\..\target\release\shouting-toad.exe")
+$source = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$tmp = $null
+if (-not $source) {
+    Write-Host 'Downloading the latest ShoutingToad release...'
+    $tmp = Join-Path $env:TEMP ("shouting-toad-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Force $tmp | Out-Null
+    $zip = Join-Path $tmp 'st.zip'
+    Invoke-WebRequest "https://github.com/$Repo/releases/latest/download/shouting-toad-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+    Expand-Archive $zip -DestinationPath $tmp -Force
+    $source = Join-Path $tmp 'shouting-toad.exe'
 }
 
-# 2. Copy binary
-$SourceExe = "$PSScriptRoot\..\target\debug\shouting-toad.exe"
-if (!(Test-Path $SourceExe)) {
-    $SourceExe = "$PSScriptRoot\..\shouting-toad.exe"
+New-Item -ItemType Directory -Force $InstallDir | Out-Null
+Copy-Item $source "$InstallDir\shouting-toad.exe" -Force
+$uninstaller = @("$PSScriptRoot\uninstall_windows.ps1", "$tmp\uninstall_windows.ps1") | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($uninstaller) { Copy-Item $uninstaller "$InstallDir\uninstall_windows.ps1" -Force }
+
+$shell = New-Object -ComObject WScript.Shell
+$startMenu = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
+foreach ($lnkPath in @("$startMenu\ShoutingToad.lnk", "$env:USERPROFILE\Desktop\ShoutingToad.lnk")) {
+    $lnk = $shell.CreateShortcut($lnkPath)
+    $lnk.TargetPath = "$InstallDir\shouting-toad.exe"
+    $lnk.WorkingDirectory = $InstallDir
+    $lnk.Description = 'ShoutingToad SEO Spider'
+    $lnk.Save()
 }
 
-Copy-Item $SourceExe "$InstallDir\shouting-toad.exe" -Force
-
-# 3. Create Start Menu Shortcut
-$WshShell = New-Object -ComObject WScript.Shell
-$StartMenuDir = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\ShoutingToad"
-if (!(Test-Path $StartMenuDir)) {
-    New-Item -ItemType Directory -Path $StartMenuDir -Force | Out-Null
+if (-not $NoPath) {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (($userPath -split ';') -notcontains $InstallDir) {
+        $newPath = if ($userPath) { "$($userPath.TrimEnd(';'));$InstallDir" } else { $InstallDir }
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    }
 }
-$Shortcut = $WshShell.CreateShortcut("$StartMenuDir\ShoutingToad.lnk")
-$Shortcut.TargetPath = "$InstallDir\shouting-toad.exe"
-$Shortcut.Description = "ShoutingToad SEO Spider - Open Source Crawler by N&D Co."
-$Shortcut.WorkingDirectory = $InstallDir
-$Shortcut.Save()
 
-# 4. Create Desktop Shortcut
-$DesktopShortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\ShoutingToad.lnk")
-$DesktopShortcut.TargetPath = "$InstallDir\shouting-toad.exe"
-$DesktopShortcut.Description = "ShoutingToad SEO Spider"
-$DesktopShortcut.WorkingDirectory = $InstallDir
-$DesktopShortcut.Save()
+$version = (& "$InstallDir\shouting-toad.exe" --version 2>$null) -replace 'shouting-toad ', ''
+$key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShoutingToad'
+New-Item -Path $key -Force | Out-Null
+Set-ItemProperty $key DisplayName 'ShoutingToad SEO Spider'
+Set-ItemProperty $key DisplayVersion "$version"
+Set-ItemProperty $key Publisher 'N&D Co.'
+Set-ItemProperty $key DisplayIcon "$InstallDir\shouting-toad.exe"
+Set-ItemProperty $key InstallLocation $InstallDir
+Set-ItemProperty $key URLInfoAbout "https://github.com/$Repo"
+Set-ItemProperty $key UninstallString "powershell.exe -ExecutionPolicy Bypass -File `"$InstallDir\uninstall_windows.ps1`""
+Set-ItemProperty $key NoModify 1
+Set-ItemProperty $key NoRepair 1
 
-# 5. Register in Windows Registry for Add/Remove Programs
-$UninstallRegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ShoutingToad"
-New-Item -Path $UninstallRegKey -Force | Out-Null
-Set-ItemProperty -Path $UninstallRegKey -Name "DisplayName" -Value "ShoutingToad SEO Spider (by N&D Co.)"
-Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion" -Value "1.0.0"
-Set-ItemProperty -Path $UninstallRegKey -Name "Publisher" -Value "N&D Co. (ndcompany.in)"
-Set-ItemProperty -Path $UninstallRegKey -Name "InstallLocation" -Value $InstallDir
-Set-ItemProperty -Path $UninstallRegKey -Name "UninstallString" -Value "powershell.exe -ExecutionPolicy Bypass -File `"$PSScriptRoot\uninstall_windows.ps1`""
-Set-ItemProperty -Path $UninstallRegKey -Name "URLInfoAbout" -Value "https://ndcompany.in"
-
-Write-Host "✓ ShoutingToad successfully installed!" -ForegroundColor Green
-Write-Host "Shortcuts added to Start Menu and Desktop." -ForegroundColor Green
+if ($tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host "ShoutingToad installed to $InstallDir" -ForegroundColor Green
+Write-Host 'Open it from the Start menu, or run "shouting-toad --help" in a new terminal.'

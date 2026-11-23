@@ -310,7 +310,7 @@ fn is_internal(sh: &Shared, url: &str) -> bool {
     let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string())) else {
         return false;
     };
-    if sh.internal_hosts.iter().any(|h| *h == host) {
+    if sh.internal_hosts.contains(&host) {
         return true;
     }
     sh.cfg.crawl_subdomains && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))

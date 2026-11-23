@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Uninstaller for ShoutingToad on Linux systems
-set -e
+# Remove ShoutingToad installed by install_linux.sh (run with the same user, or root for a system install).
+set -euo pipefail
 
-if [ "$EUID" -ne 0 ]; then
-    echo "Please execute as root: sudo ./uninstall_linux.sh"
-    exit 1
+if [ "$(id -u)" -eq 0 ]; then
+    rm -f /usr/local/bin/shouting-toad /usr/share/applications/shouting-toad.desktop /usr/share/icons/hicolor/256x256/apps/shouting-toad.png
+else
+    rm -f "$HOME/.local/bin/shouting-toad" "$HOME/.local/share/applications/shouting-toad.desktop" "$HOME/.local/share/icons/hicolor/256x256/apps/shouting-toad.png"
 fi
-
-rm -f /usr/local/bin/shouting-toad
-rm -f /usr/share/applications/shouting-toad.desktop
-
-echo "ShoutingToad removed successfully."
+echo "ShoutingToad removed. Saved settings, if any, are in ~/.local/share/ShoutingToad."

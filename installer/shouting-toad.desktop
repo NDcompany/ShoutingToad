@@ -2,11 +2,11 @@
 Version=1.0
 Type=Application
 Name=ShoutingToad
-GenericName=SEO Spider & Website Crawler
-Comment=High-performance open-source website audit and crawler by N&D Co.
-Exec=shouting-toad %u
+GenericName=SEO Spider
+Comment=Crawl a website and audit it for over 300 SEO and UX issues
+Exec=shouting-toad %f
 Icon=shouting-toad
 Terminal=false
-Categories=Development;WebDevelopment;Utility;
-Keywords=seo;spider;crawler;audit;screamingfrog;ndcompany;
+Categories=Development;WebDevelopment;Network;
+Keywords=seo;spider;crawler;audit;website;
 StartupWMClass=shouting-toad

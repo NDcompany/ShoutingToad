@@ -24,7 +24,7 @@ fn row(cells: &[String]) -> String {
 }
 
 macro_rules! cells {
-    ($($x:expr),* $(,)?) => { vec![$($x.to_string()),*] };
+    ($($x:expr),* $(,)?) => { [$($x.to_string()),*] };
 }
 
 pub fn internal_csv(crawl: &Crawl, audit: &Audit) -> String {

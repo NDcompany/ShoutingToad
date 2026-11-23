@@ -687,6 +687,13 @@ impl App {
         let Some(target) = self.screenshot.clone() else { return };
         ctx.request_repaint();
         self.frames += 1;
+        // Docs helper: SHOUTINGTOAD_SCREENSHOT_VIEW=urls shows the URL table with the first page inspected.
+        if self.frames == 1 && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("urls") && self.has_data() {
+            self.view = View::Urls;
+            self.selected = self.crawl.pages.iter().position(audit::ih);
+            self.insp = Insp::Serp;
+            self.rows_dirty = true;
+        }
         if self.frames == 60 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
@@ -1110,7 +1117,7 @@ impl App {
                     badge(ui, &format!("{} priority", c.priority.label()), Color32::GRAY);
                     ui.label(RichText::new(format!("{}: {}", c.category, c.name)).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("✖ Show all URLs").clicked() {
+                        if ui.button("Show all URLs").clicked() {
                             clear = true;
                         }
                     });
@@ -1157,24 +1164,26 @@ impl App {
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(44.0))
-            .column(Column::initial(380.0).at_least(160.0).clip(true))
-            .column(Column::exact(56.0))
-            .column(Column::initial(110.0).clip(true))
-            .column(Column::initial(260.0).at_least(80.0).clip(true))
             .column(Column::exact(40.0))
-            .column(Column::exact(56.0))
+            .column(Column::remainder().at_least(180.0).clip(true))
             .column(Column::exact(50.0))
-            .column(Column::exact(58.0))
-            .column(Column::exact(64.0))
-            .column(Column::exact(66.0))
-            .column(Column::remainder().at_least(50.0))
+            .column(Column::initial(100.0).clip(true))
+            .column(Column::initial(220.0).at_least(80.0).clip(true))
+            .column(Column::exact(36.0))
+            .column(Column::exact(50.0))
+            .column(Column::exact(44.0))
+            .column(Column::exact(52.0))
+            .column(Column::exact(62.0))
+            .column(Column::exact(62.0))
+            .column(Column::exact(46.0))
             .header(22.0, |mut h| {
                 for (c, name) in cols {
                     h.col(|ui| {
-                        let arrow = if sort_col == c { if asc { " ▲" } else { " ▼" } } else { "" };
-                        if ui.add(egui::Label::new(RichText::new(format!("{name}{arrow}")).strong()).sense(egui::Sense::click())).clicked() {
+                        if ui.add(egui::Label::new(RichText::new(name).strong()).sense(egui::Sense::click())).clicked() {
                             new_sort = Some(c);
+                        }
+                        if sort_col == c {
+                            sort_triangle(ui, asc);
                         }
                     });
                 }
@@ -1442,6 +1451,17 @@ impl App {
     }
 }
 
+fn sort_triangle(ui: &mut egui::Ui, ascending: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    let c = rect.center();
+    let pts = if ascending {
+        vec![egui::pos2(c.x - 4.0, c.y + 3.0), egui::pos2(c.x + 4.0, c.y + 3.0), egui::pos2(c.x, c.y - 3.0)]
+    } else {
+        vec![egui::pos2(c.x - 4.0, c.y - 3.0), egui::pos2(c.x + 4.0, c.y - 3.0), egui::pos2(c.x, c.y + 3.0)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(pts, ui.visuals().text_color(), egui::Stroke::NONE));
+}
+
 fn dot(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 4.0, color);
@@ -1453,7 +1473,10 @@ fn row_num(i: usize) -> usize {
 
 fn bar(ui: &mut egui::Ui, label: &str, n: usize, frac: f32, color: Color32) {
     ui.horizontal(|ui| {
-        ui.add_sized([150.0, 18.0], egui::Label::new(label).truncate());
+        ui.allocate_ui_with_layout(egui::vec2(150.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(150.0);
+            ui.add(egui::Label::new(label).truncate());
+        });
         let w = (ui.available_width() - 60.0).max(60.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 12.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 3.0, ui.visuals().faint_bg_color);

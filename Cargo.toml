@@ -2,11 +2,13 @@
 name = "shouting-toad"
 version = "1.0.0"
 edition = "2021"
+rust-version = "1.82"
 description = "The ShoutingToad SEO Spider is a website crawler that audits your site for over 300 SEO issues to help improve both SEO, and UX and more"
 authors = ["N&D Co. <contact@ndcompany.in>"]
 repository = "https://github.com/NDcompany/ShoutingToad"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
+exclude = ["assets/icon.png", "shots/", ".github/"]
 keywords = ["seo", "crawler", "spider", "audit", "technical-seo"]
 categories = ["command-line-utilities", "web-programming::http-client", "gui"]
 
@@ -34,3 +36,6 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[build-dependencies]
+winresource = "0.1"
