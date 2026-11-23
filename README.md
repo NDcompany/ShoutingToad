@@ -23,7 +23,7 @@
 
 ## Features
 
-- **Fast, polite crawler.** Multi-threaded, with a configurable request delay. Respects robots.txt, reads XML, RSS, Atom and text sitemaps, handles gzip and Brotli, and follows redirects, canonicals, hreflang and pagination links.
+- **Fast, polite crawler.** Multi-threaded, with a configurable request delay. Respects robots.txt by default (one checkbox, or `--ignore-robots`, turns that off for sites you own), reads XML, RSS, Atom and text sitemaps, handles gzip and Brotli, and follows redirects, canonicals, hreflang and pagination links.
 - **450 checks across 28 categories.** Each finding comes with its type (Issue, Warning or Opportunity), a priority, what it means and how to fix it.
 - **AI search readiness.** Checks what AI crawlers can really fetch, not just what robots.txt says: the start page and the most-linked pages are requested with the published user agents of 18 AI crawlers (search, user-triggered and training bots from OpenAI, Anthropic, Perplexity, Google, Apple, Meta, Common Crawl and others) and compared with a normal request, so firewall and CDN blocks, bot challenges, thinner content and bot-specific noindex show up. It also flags content AI crawlers cannot see without JavaScript and scores how quotable each section of a page is.
 - **Site-wide analysis.** Finds duplicate and near-duplicate content, orphan pages, redirect chains and loops, broken internal and external links, hreflang return links, canonical chains, crawl depth and sitemap problems.

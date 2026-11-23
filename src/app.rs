@@ -19,6 +19,8 @@ mod compare;
 mod migrate;
 mod rules;
 
+const ROBOTS_HELP: &str = "Ticked: URLs that robots.txt disallows are not fetched and are listed as blocked.
+Unticked: robots.txt is ignored and everything the crawler finds is fetched. Only do this on sites you own or have permission to audit.";
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
 const OPPORTUNITY: Color32 = Color32::from_rgb(70, 145, 235);
@@ -1227,8 +1229,14 @@ impl App {
                     self.show_catalogue = true;
                 }
             });
-            ui.add_space(24.0);
-            ui.label(RichText::new("Respects robots.txt by default · Free and open source under the AGPL-3.0").small().weak());
+            ui.add_space(18.0);
+            ui.checkbox(&mut self.settings.cfg.respect_robots, "Respect robots.txt")
+                .on_hover_text(ROBOTS_HELP);
+            if !self.settings.cfg.respect_robots {
+                ui.label(RichText::new("robots.txt is ignored: every URL the crawler finds will be fetched.").small().color(egui::Color32::from_rgb(214, 140, 40)));
+            }
+            ui.add_space(8.0);
+            ui.label(RichText::new("Free and open source under the AGPL-3.0").small().weak());
         });
     }
 
@@ -2036,7 +2044,7 @@ impl App {
                 ui.end_row();
             });
             ui.separator();
-            ui.checkbox(&mut c.respect_robots, "Respect robots.txt");
+            ui.checkbox(&mut c.respect_robots, "Respect robots.txt").on_hover_text(ROBOTS_HELP);
             ui.checkbox(&mut c.crawl_sitemaps, "Crawl URLs found in XML sitemaps (finds orphan pages)");
             ui.checkbox(&mut c.check_external, "Check external links");
             ui.checkbox(&mut c.check_resources, "Check images, CSS and JavaScript");

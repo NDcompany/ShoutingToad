@@ -101,9 +101,12 @@ name = "Product price is 0 in structured data"
 category = "Structured Data"
 kind = "warning"
 priority = "medium"
-description = "An offer in the structured data has a price of 0. Unless the product really is free, this is usually a variant or template bug, and Google may show the product as free or reject the listing."
+description = "A Product in the structured data has an offer with a price of 0. Unless the product really is free, this is usually a variant or template bug, and Google may show the product as free or reject the listing."
 fix = "Output the real price of the selected or cheapest available variant. Leave out offers for products that have no price."
-when = { selector = 'script[type="application/ld+json"]', matches = '"price"\s*:\s*"?0+(\.0+)?"?\s*[,}]' }
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"Product"' },
+  { selector = 'script[type="application/ld+json"]', matches = '"price"\s*:\s*"?0+(\.0+)?"?\s*[,}]' },
+]
 
 [[rule]]
 id = "out-of-stock"

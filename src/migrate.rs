@@ -406,7 +406,20 @@ impl<'a> Target<'a> {
             }
         }
         let best = (!cands.is_empty()).then(|| self.best_of(&cands, &slug, &path));
-        if let Some((i, (s, _))) = best.filter(|b| b.1 .0 >= 0.5) {
+        // A partial slug match needs 2+ shared words or the same parent folder:
+        // "/plugins/classic-editor" must not map to "/docs/block-editor" on "editor" alone.
+        let parent = |x: &Url| {
+            let p = x.path().trim_end_matches('/');
+            p[..p.rfind('/').unwrap_or(0)].to_string()
+        };
+        let plausible = |&(i, (s, _)): &(usize, (f32, f32))| {
+            let shared = slug
+                .iter()
+                .filter(|t| self.slugs[i].binary_search(t).is_ok())
+                .count();
+            s >= 1.0 || (s >= 0.5 && (shared >= 2 || parent(&u) == parent(&self.pages[i].1)))
+        };
+        if let Some((i, (s, _))) = best.filter(plausible) {
             hit(
                 &mut m,
                 i,

@@ -293,7 +293,8 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         drop(q);
         run_workers(&sh);
     }
-    if sh.cfg.ai_bots && !sh.stop.load(Ordering::Relaxed) {
+    // List mode audits given URLs (often old, redirecting ones): no "site" to test bots on.
+    if sh.cfg.ai_bots && !sh.list_mode && !sh.stop.load(Ordering::Relaxed) {
         ai_phase(&sh, site, &seeds[0]);
     }
     let _ = sh.tx.send(Event::Finished);
