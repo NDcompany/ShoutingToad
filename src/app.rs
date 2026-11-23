@@ -14,9 +14,9 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod ai_search;
 mod compare;
 mod migrate;
-mod ai_search;
 
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
