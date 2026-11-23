@@ -1,0 +1,17 @@
+/target/
+**/*.rs.bk
+*.pdb
+*.log
+.DS_Store
+Thumbs.db
+
+# local leftovers, never part of the source
+cargo.exe
+bulk_export_*.csv
+/shots/
+/assets/icon.png
+test_exports/
+
+# crawl output
+*.shoutingtoad
+shoutingtoad-report/

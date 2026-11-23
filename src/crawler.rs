@@ -1,0 +1,815 @@
+//! Multi-threaded spider. Fetches URLs, parses HTML and streams [`Page`]s out.
+
+use crate::model::{Page, RobotsInfo, SiteInfo, SitemapInfo, Source};
+use crate::parse::{decode_body, parse_html};
+use crate::robots::Robots;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+use url::Url;
+
+pub const DEFAULT_UA: &str = concat!(
+    "Mozilla/5.0 (compatible; ShoutingToad/",
+    env!("CARGO_PKG_VERSION"),
+    "; +https://github.com/NDcompany/ShoutingToad)"
+);
+
+const HTML_LIMIT: usize = 15 * 1024 * 1024;
+const RESOURCE_LIMIT: usize = 25 * 1024 * 1024;
+const MAX_SITEMAPS: usize = 200;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub max_depth: usize,
+    pub max_urls: usize,
+    pub threads: usize,
+    pub delay_ms: u64,
+    pub timeout_secs: u64,
+    pub user_agent: String,
+    pub respect_robots: bool,
+    pub crawl_subdomains: bool,
+    pub check_external: bool,
+    pub check_resources: bool,
+    pub follow_nofollow: bool,
+    pub crawl_sitemaps: bool,
+    pub include: String,
+    pub exclude: String,
+    pub custom_search: String,
+    pub custom_extract: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            max_depth: 10,
+            max_urls: 100_000,
+            threads: 6,
+            delay_ms: 0,
+            timeout_secs: 20,
+            user_agent: DEFAULT_UA.to_string(),
+            respect_robots: true,
+            crawl_subdomains: false,
+            check_external: true,
+            check_resources: true,
+            follow_nofollow: false,
+            crawl_sitemaps: true,
+            include: String::new(),
+            exclude: String::new(),
+            custom_search: String::new(),
+            custom_extract: String::new(),
+        }
+    }
+}
+
+impl Config {
+    /// Lower-case product token used to pick a robots.txt group.
+    pub fn robots_agent(&self) -> String {
+        let ua = self.user_agent.to_ascii_lowercase();
+        for bot in ["googlebot", "bingbot", "shoutingtoad"] {
+            if ua.contains(bot) {
+                return bot.to_string();
+            }
+        }
+        ua.split(['/', ' ', ';', '(']).find(|s| !s.is_empty()).unwrap_or("*").to_string()
+    }
+}
+
+pub enum Event {
+    Page(Box<Page>),
+    Progress { crawled: usize, queued: usize, active: usize },
+    Site(Box<SiteInfo>),
+    Log(String),
+    Finished,
+}
+
+pub struct Handle {
+    pub rx: Receiver<Event>,
+    pub stop: Arc<AtomicBool>,
+    pub pause: Arc<AtomicBool>,
+}
+
+pub fn normalize_url(raw: &str) -> Result<Url, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("Enter a URL to crawl".into());
+    }
+    let full = if t.contains("://") { t.to_string() } else { format!("https://{t}") };
+    let mut u = Url::parse(&full).map_err(|e| format!("'{raw}' is not a valid URL: {e}"))?;
+    if u.scheme() != "http" && u.scheme() != "https" {
+        return Err(format!("'{raw}' must be an http or https URL"));
+    }
+    if u.host_str().is_none() {
+        return Err(format!("'{raw}' has no host name"));
+    }
+    u.set_fragment(None);
+    Ok(u)
+}
+
+struct Job {
+    url: String,
+    depth: usize,
+    source: Source,
+}
+
+struct Queue {
+    jobs: VecDeque<Job>,
+    seen: HashSet<String>,
+    active: usize,
+}
+
+struct Shared {
+    cfg: Config,
+    list_mode: bool,
+    client: reqwest::blocking::Client,
+    queue: Mutex<Queue>,
+    cv: Condvar,
+    stop: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    next_slot: Mutex<Instant>,
+    delay: Duration,
+    ids: AtomicUsize,
+    crawled: AtomicUsize,
+    robots: Mutex<HashMap<String, Option<Robots>>>,
+    internal_hosts: Vec<String>,
+    root_domain: String,
+    include: Option<Regex>,
+    exclude: Option<Regex>,
+    custom_search: Option<Regex>,
+    custom_extract: Option<Regex>,
+    tx: Sender<Event>,
+}
+
+fn opt_regex(pattern: &str, what: &str) -> Result<Option<Regex>, String> {
+    if pattern.trim().is_empty() {
+        return Ok(None);
+    }
+    Regex::new(pattern.trim()).map(Some).map_err(|e| format!("{what} pattern is not a valid regex: {e}"))
+}
+
+/// Start a crawl. `list_mode` audits exactly the given URLs without following links.
+pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle, String> {
+    let mut urls = Vec::new();
+    for s in seeds.iter().filter(|s| !s.trim().is_empty()) {
+        urls.push(normalize_url(s)?);
+    }
+    if urls.is_empty() {
+        return Err("Enter at least one URL to crawl".into());
+    }
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(cfg.user_agent.clone())
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(cfg.timeout_secs.max(1)))
+        .connect_timeout(Duration::from_secs(cfg.timeout_secs.clamp(1, 15)))
+        .pool_max_idle_per_host(cfg.threads.max(1))
+        .build()
+        .map_err(|e| format!("Could not create HTTP client: {e}"))?;
+
+    let mut internal_hosts: Vec<String> = urls.iter().filter_map(|u| u.host_str().map(|h| h.to_string())).collect();
+    internal_hosts.sort();
+    internal_hosts.dedup();
+    let root_domain = internal_hosts[0].trim_start_matches("www.").to_string();
+
+    let (tx, rx) = channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let pause = Arc::new(AtomicBool::new(false));
+    let shared = Arc::new(Shared {
+        include: opt_regex(&cfg.include, "Include")?,
+        exclude: opt_regex(&cfg.exclude, "Exclude")?,
+        custom_search: opt_regex(&cfg.custom_search, "Custom search")?,
+        custom_extract: opt_regex(&cfg.custom_extract, "Custom extraction")?,
+        delay: Duration::from_millis(cfg.delay_ms),
+        cfg,
+        list_mode,
+        client,
+        queue: Mutex::new(Queue { jobs: VecDeque::new(), seen: HashSet::new(), active: 0 }),
+        cv: Condvar::new(),
+        stop: stop.clone(),
+        pause: pause.clone(),
+        next_slot: Mutex::new(Instant::now()),
+        ids: AtomicUsize::new(1),
+        crawled: AtomicUsize::new(0),
+        robots: Mutex::new(HashMap::new()),
+        internal_hosts,
+        root_domain,
+        tx,
+    });
+
+    thread::spawn(move || run(shared, urls));
+    Ok(Handle { rx, stop, pause })
+}
+
+fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
+    let start = seeds[0].clone();
+    let mut site = SiteInfo::default();
+
+    // robots.txt + sitemaps for the primary host, before any page is fetched
+    let robots = fetch_robots(&sh, &start, true, &mut site);
+    let mut sitemap_urls: Vec<String> = Vec::new();
+    if !sh.list_mode {
+        sitemap_urls = fetch_sitemaps(&sh, &start, robots.as_ref(), &mut site);
+        site.sitemaps_checked = true;
+        check_host_variants(&sh, &start, &mut site);
+    }
+    site.sitemap_urls = sitemap_urls.clone();
+    let _ = sh.tx.send(Event::Site(Box::new(site.clone())));
+
+    {
+        let mut q = sh.queue.lock().unwrap();
+        for u in &seeds {
+            if q.seen.insert(u.to_string()) {
+                q.jobs.push_back(Job { url: u.to_string(), depth: 0, source: Source::Seed });
+            }
+        }
+    }
+    run_workers(&sh);
+
+    // Phase 2: sitemap URLs the link crawl never reached (orphan candidates).
+    if sh.cfg.crawl_sitemaps && !sh.stop.load(Ordering::Relaxed) {
+        let mut q = sh.queue.lock().unwrap();
+        for u in &sitemap_urls {
+            if q.seen.len() >= sh.cfg.max_urls {
+                break;
+            }
+            if is_internal(&sh, u) && q.seen.insert(u.clone()) {
+                q.jobs.push_back(Job { url: u.clone(), depth: 1, source: Source::Sitemap });
+            }
+        }
+        drop(q);
+        run_workers(&sh);
+    }
+    let _ = sh.tx.send(Event::Finished);
+}
+
+fn run_workers(sh: &Arc<Shared>) {
+    let handles: Vec<_> = (0..sh.cfg.threads.clamp(1, 64))
+        .map(|_| {
+            let sh = sh.clone();
+            thread::spawn(move || worker(sh))
+        })
+        .collect();
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
+fn worker(sh: Arc<Shared>) {
+    loop {
+        while sh.pause.load(Ordering::Relaxed) && !sh.stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(150));
+        }
+        let job = {
+            let mut q = sh.queue.lock().unwrap();
+            loop {
+                if sh.stop.load(Ordering::Relaxed) {
+                    break None;
+                }
+                if let Some(j) = q.jobs.pop_front() {
+                    q.active += 1;
+                    break Some(j);
+                }
+                if q.active == 0 {
+                    break None;
+                }
+                q = sh.cv.wait_timeout(q, Duration::from_millis(200)).unwrap().0;
+            }
+        };
+        let Some(job) = job else {
+            sh.cv.notify_all();
+            return;
+        };
+
+        let (page, discovered) = process(&sh, &job);
+        let crawled = sh.crawled.fetch_add(1, Ordering::Relaxed) + 1;
+        let (queued, active) = {
+            let mut q = sh.queue.lock().unwrap();
+            for d in discovered {
+                if q.seen.len() >= sh.cfg.max_urls {
+                    break;
+                }
+                if q.seen.insert(d.url.clone()) {
+                    q.jobs.push_back(d);
+                }
+            }
+            q.active -= 1;
+            (q.jobs.len(), q.active)
+        };
+        sh.cv.notify_all();
+        let _ = sh.tx.send(Event::Page(Box::new(page)));
+        let _ = sh.tx.send(Event::Progress { crawled, queued, active });
+    }
+}
+
+fn is_internal(sh: &Shared, url: &str) -> bool {
+    let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string())) else {
+        return false;
+    };
+    if sh.internal_hosts.iter().any(|h| *h == host) {
+        return true;
+    }
+    sh.cfg.crawl_subdomains && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))
+}
+
+fn throttle(sh: &Shared) {
+    if sh.delay.is_zero() {
+        return;
+    }
+    let wait = {
+        let mut next = sh.next_slot.lock().unwrap();
+        let now = Instant::now();
+        let slot = (*next).max(now);
+        *next = slot + sh.delay;
+        slot - now
+    };
+    thread::sleep(wait);
+}
+
+struct Response {
+    status: u16,
+    reason: String,
+    headers: Vec<(String, String)>,
+    version: String,
+    elapsed_ms: u64,
+    body: Vec<u8>,
+    transfer: usize,
+    encoding: String,
+}
+
+fn fetch(sh: &Shared, url: &str, head: bool, limit: usize) -> Result<Response, String> {
+    throttle(sh);
+    let t0 = Instant::now();
+    let req = if head { sh.client.head(url) } else { sh.client.get(url) };
+    let resp = req
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .send()
+        .map_err(describe_error)?;
+    let status = resp.status();
+    let headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .collect();
+    let version = format!("{:?}", resp.version());
+    let encoding = resp
+        .headers()
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let mut raw = Vec::new();
+    if !head {
+        let _ = resp.take(limit as u64).read_to_end(&mut raw);
+    }
+    let elapsed_ms = t0.elapsed().as_millis() as u64;
+    let transfer = raw.len();
+    let body = decompress(&encoding, raw, limit);
+    Ok(Response {
+        status: status.as_u16(),
+        reason: status.canonical_reason().unwrap_or("").to_string(),
+        headers,
+        version,
+        elapsed_ms,
+        body,
+        transfer,
+        encoding,
+    })
+}
+
+fn decompress(encoding: &str, raw: Vec<u8>, limit: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let ok = match encoding {
+        "gzip" | "x-gzip" => flate2::read::GzDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok(),
+        "deflate" => {
+            flate2::read::ZlibDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok() || {
+                out.clear();
+                flate2::read::DeflateDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok()
+            }
+        }
+        "br" => brotli_decompressor::Decompressor::new(&raw[..], 4096)
+            .take(limit as u64)
+            .read_to_end(&mut out)
+            .is_ok(),
+        _ => return raw,
+    };
+    if ok {
+        out
+    } else {
+        raw
+    }
+}
+
+fn describe_error(e: reqwest::Error) -> String {
+    use std::error::Error;
+    let mut msg = if e.is_timeout() {
+        "Timeout".to_string()
+    } else if e.is_connect() {
+        "Connection failed".to_string()
+    } else {
+        "Request failed".to_string()
+    };
+    let mut src = e.source();
+    let mut detail = String::new();
+    while let Some(s) = src {
+        detail = s.to_string();
+        src = s.source();
+    }
+    if !detail.is_empty() {
+        msg.push_str(": ");
+        msg.push_str(&detail);
+    }
+    msg
+}
+
+fn robots_for(sh: &Shared, url: &Url) -> Option<Robots> {
+    let key = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+    if let Some(r) = sh.robots.lock().unwrap().get(&key) {
+        return r.clone();
+    }
+    let mut ignored = SiteInfo::default();
+    fetch_robots(sh, url, false, &mut ignored)
+}
+
+/// Fetch robots.txt for the URL's host, emit it as a page, and cache the rules.
+fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> Option<Robots> {
+    let key = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+    let robots_url = format!("{key}/robots.txt");
+    let mut current = robots_url.clone();
+    let mut redirected = false;
+    let mut result = None;
+    for _ in 0..5 {
+        match fetch(sh, &current, false, 1024 * 1024) {
+            Ok(r) if (300..400).contains(&r.status) => {
+                let loc = header(&r.headers, "location").and_then(|l| Url::parse(&current).ok()?.join(&l).ok());
+                match loc {
+                    Some(l) => {
+                        redirected = true;
+                        current = l.to_string();
+                    }
+                    None => {
+                        result = Some(r);
+                        break;
+                    }
+                }
+            }
+            Ok(r) => {
+                result = Some(r);
+                break;
+            }
+            Err(e) => {
+                let _ = sh.tx.send(Event::Log(format!("robots.txt: {e}")));
+                break;
+            }
+        }
+    }
+    let rules = result.as_ref().filter(|r| r.status == 200).map(|r| Robots::parse(&String::from_utf8_lossy(&r.body)));
+    if primary {
+        let agent = sh.cfg.robots_agent();
+        site.robots = Some(RobotsInfo {
+            url: robots_url.clone(),
+            status: result.as_ref().map(|r| r.status).unwrap_or(0),
+            size: result.as_ref().map(|r| r.body.len()).unwrap_or(0),
+            redirected,
+            disallow_all: rules.as_ref().is_some_and(|r| r.disallows_all(&agent)),
+            crawl_delay: rules.as_ref().and_then(|r| r.crawl_delay(&agent)),
+            sitemap_directives: rules.as_ref().map(|r| r.sitemaps.clone()).unwrap_or_default(),
+            invalid_lines: rules.as_ref().map(|r| r.invalid_lines).unwrap_or(0),
+            noindex_lines: rules.as_ref().map(|r| r.noindex_lines).unwrap_or(0),
+        });
+        if let Some(r) = &result {
+            let page = resource_page(sh, &robots_url, 0, Source::Robots, true, r);
+            sh.queue.lock().unwrap().seen.insert(robots_url.clone());
+            let _ = sh.tx.send(Event::Page(Box::new(page)));
+        }
+    }
+    sh.robots.lock().unwrap().insert(key, rules.clone());
+    rules
+}
+
+fn header(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+}
+
+fn valid_lastmod(s: &str) -> bool {
+    let s = s.trim();
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
+        || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+        || chrono::NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d").is_ok()
+        || (s.len() == 4 && s.parse::<u32>().is_ok())
+        || chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M%:z").is_ok()
+}
+
+fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut SiteInfo) -> Vec<String> {
+    let base = format!("{}://{}", start.scheme(), start.host_str().unwrap_or(""));
+    let declared: Vec<String> = robots.map(|r| r.sitemaps.clone()).unwrap_or_default();
+    let mut todo: VecDeque<(String, bool)> = declared.iter().map(|s| (s.clone(), true)).collect();
+    let default = format!("{base}/sitemap.xml");
+    // Only guess /sitemap.xml when robots.txt declares nothing.
+    if declared.is_empty() {
+        todo.push_back((default.clone(), false));
+    }
+    let mut done: HashSet<String> = HashSet::new();
+    let mut urls: Vec<String> = Vec::new();
+    let mut url_set: HashSet<String> = HashSet::new();
+    while let Some((sm_url, in_robots)) = todo.pop_front() {
+        if done.len() >= MAX_SITEMAPS || !done.insert(sm_url.clone()) || sh.stop.load(Ordering::Relaxed) {
+            continue;
+        }
+        let resp = match fetch(sh, &sm_url, false, 60 * 1024 * 1024) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = sh.tx.send(Event::Log(format!("Sitemap {sm_url}: {e}")));
+                continue;
+            }
+        };
+        // Probing /sitemap.xml is a guess; a 404 there is not a finding.
+        if !in_robots && sm_url == default && resp.status == 404 {
+            continue;
+        }
+        let page = resource_page(sh, &sm_url, 0, Source::Sitemap, true, &resp);
+        sh.queue.lock().unwrap().seen.insert(sm_url.clone());
+        let _ = sh.tx.send(Event::Page(Box::new(page)));
+        let mut info = SitemapInfo { url: sm_url.clone(), status: resp.status, in_robots, size: resp.body.len(), ..Default::default() };
+        if resp.status == 200 {
+            let mut body = resp.body.clone();
+            if body.starts_with(&[0x1f, 0x8b]) {
+                let mut out = Vec::new();
+                if flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut out).is_ok() {
+                    body = out;
+                }
+            }
+            let text = String::from_utf8_lossy(&body);
+            let mut locs: Vec<String> = Vec::new();
+            if let Ok(doc) = roxmltree::Document::parse(&text) {
+                info.valid_xml = true;
+                let root = doc.root_element();
+                let child_text = |n: roxmltree::Node, name: &str| {
+                    n.children().find(|c| c.tag_name().name() == name).and_then(|c| c.text()).map(|t| t.trim().to_string())
+                };
+                match root.tag_name().name() {
+                    // Google also accepts RSS 2.0 and Atom feeds as sitemaps.
+                    "feed" => {
+                        for entry in root.children().filter(|n| n.tag_name().name() == "entry") {
+                            let link = entry
+                                .children()
+                                .filter(|c| c.tag_name().name() == "link")
+                                .find(|c| c.attribute("rel").is_none_or(|r| r == "alternate"))
+                                .and_then(|c| c.attribute("href"));
+                            if let Some(l) = link {
+                                locs.push(l.trim().to_string());
+                            }
+                        }
+                    }
+                    "rss" => {
+                        for item in root.descendants().filter(|n| n.tag_name().name() == "item") {
+                            if let Some(l) = child_text(item, "link") {
+                                locs.push(l);
+                            }
+                        }
+                    }
+                    name => {
+                        info.is_index = name == "sitemapindex";
+                        for entry in root.children().filter(|n| n.is_element()) {
+                            let Some(loc) = child_text(entry, "loc") else { continue };
+                            if let Some(lm) = child_text(entry, "lastmod") {
+                                if !valid_lastmod(&lm) {
+                                    info.invalid_lastmod += 1;
+                                }
+                            }
+                            locs.push(loc);
+                        }
+                    }
+                }
+            } else if !text.trim_start().starts_with('<') {
+                // Plain-text sitemap: one URL per line.
+                info.valid_xml = true;
+                locs = text.lines().map(|l| l.trim().to_string()).filter(|l| l.starts_with("http")).collect();
+            }
+            for loc in locs {
+                info.url_count += 1;
+                if info.is_index {
+                    todo.push_back((loc, in_robots));
+                } else if let Ok(u) = normalize_url(&loc) {
+                    if u.host_str() != start.host_str() {
+                        info.other_host_urls += 1;
+                    }
+                    let s = u.to_string();
+                    if url_set.insert(s.clone()) {
+                        urls.push(s);
+                    }
+                }
+            }
+        }
+        site.sitemaps.push(info);
+    }
+    urls
+}
+
+fn check_host_variants(sh: &Shared, start: &Url, site: &mut SiteInfo) {
+    let host = start.host_str().unwrap_or("").to_string();
+    if start.scheme() == "https" {
+        let http = format!("http://{host}/");
+        if let Ok(r) = fetch(sh, &http, false, 64 * 1024) {
+            site.http_redirects_to_https = Some(
+                (300..400).contains(&r.status)
+                    && header(&r.headers, "location").is_some_and(|l| l.starts_with("https://")),
+            );
+        }
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() || host == "localhost" {
+        return;
+    }
+    let alt = match host.strip_prefix("www.") {
+        Some(bare) => bare.to_string(),
+        None => format!("www.{host}"),
+    };
+    let alt_url = format!("{}://{alt}/", start.scheme());
+    if let Ok(r) = fetch(sh, &alt_url, false, 64 * 1024) {
+        site.alt_host_redirects = Some(
+            (300..400).contains(&r.status) && header(&r.headers, "location").is_some_and(|l| l.contains(&host)),
+        );
+    }
+}
+
+fn base_page(sh: &Shared, url: &str, depth: usize, source: Source, internal: bool) -> Page {
+    Page {
+        id: sh.ids.fetch_add(1, Ordering::Relaxed),
+        url: url.to_string(),
+        source: Some(source),
+        is_internal: internal,
+        depth,
+        ..Default::default()
+    }
+}
+
+fn fill_response(page: &mut Page, r: &Response, url: &Url) {
+    page.status = r.status;
+    page.status_text = r.reason.clone();
+    page.headers = r.headers.clone();
+    page.http_version = r.version.clone();
+    page.response_ms = r.elapsed_ms;
+    page.transfer_size = r.transfer;
+    page.size = r.body.len();
+    page.content_encoding = r.encoding.clone();
+    page.content_type = header(&r.headers, "content-type").unwrap_or_default();
+    if (300..400).contains(&r.status) {
+        page.redirect_to = header(&r.headers, "location").and_then(|l| url.join(l.trim()).ok()).map(|mut u| {
+            u.set_fragment(None);
+            u.to_string()
+        });
+    }
+    if let Some(len) = header(&r.headers, "content-length").and_then(|v| v.trim().parse::<usize>().ok()) {
+        if page.size == 0 {
+            page.size = len;
+            page.transfer_size = len;
+        }
+    }
+}
+
+fn resource_page(sh: &Shared, url: &str, depth: usize, source: Source, internal: bool, r: &Response) -> Page {
+    let mut p = base_page(sh, url, depth, source, internal);
+    if let Ok(u) = Url::parse(url) {
+        fill_response(&mut p, r, &u);
+    }
+    p
+}
+
+fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
+    let internal = is_internal(sh, &job.url);
+    let mut page = base_page(sh, &job.url, job.depth, job.source, internal);
+    let mut found = Vec::new();
+    let Ok(url) = Url::parse(&job.url) else {
+        page.error = Some("Invalid URL".into());
+        return (page, found);
+    };
+
+    if internal && sh.cfg.respect_robots {
+        if let Some(rules) = robots_for(sh, &url) {
+            let path = match url.query() {
+                Some(q) => format!("{}?{q}", url.path()),
+                None => url.path().to_string(),
+            };
+            if !rules.is_allowed(&path, &sh.cfg.robots_agent()) {
+                page.blocked_by_robots = true;
+                page.status_text = "Blocked by robots.txt".into();
+                return (page, found);
+            }
+        }
+    }
+
+    let is_resource = matches!(job.source, Source::Image | Source::Script | Source::Stylesheet);
+    let full_fetch = internal && !is_resource;
+    let result = if full_fetch {
+        fetch(sh, &job.url, false, HTML_LIMIT)
+    } else {
+        // Status-only check. Some servers reject HEAD, so fall back to GET.
+        // Some servers answer HEAD wrongly (404/405/403), so confirm any error with GET.
+        let limit = if is_resource { RESOURCE_LIMIT } else { 256 * 1024 };
+        match fetch(sh, &job.url, true, 0) {
+            Ok(r) if r.status >= 400 || (r.status == 200 && is_resource && header(&r.headers, "content-length").is_none()) => {
+                fetch(sh, &job.url, false, limit)
+            }
+            Err(_) => fetch(sh, &job.url, false, limit),
+            other => other,
+        }
+    };
+    let resp = match result {
+        Ok(r) => r,
+        Err(e) => {
+            page.error = Some(e.clone());
+            page.status_text = e;
+            return (page, found);
+        }
+    };
+    fill_response(&mut page, &resp, &url);
+
+    let next_depth = job.depth + 1;
+    if let Some(loc) = &page.redirect_to {
+        let target_internal = is_internal(sh, loc);
+        if target_internal || sh.cfg.check_external {
+            found.push(Job { url: loc.clone(), depth: job.depth, source: Source::Redirect });
+        }
+    }
+
+    let is_html = page.content_type.to_ascii_lowercase().contains("html")
+        || (page.content_type.is_empty() && resp.body.trim_ascii_start().starts_with(b"<"));
+    if !full_fetch || resp.status != 200 && !(400..600).contains(&resp.status) || !is_html {
+        return (page, found);
+    }
+
+    let text = decode_body(&resp.body, &page.content_type);
+    if let Some(re) = &sh.custom_search {
+        page.custom_search_hits = re.find_iter(&text).count();
+    }
+    if let Some(re) = &sh.custom_extract {
+        page.custom_extract = re
+            .captures_iter(&text)
+            .filter_map(|c| c.get(1).or(c.get(0)).map(|m| m.as_str().trim().to_string()))
+            .take(10)
+            .collect();
+    }
+    let data = parse_html(&text, &url);
+
+    // Error pages are parsed for reporting but their links are not followed.
+    if resp.status == 200 {
+        let page_nofollow = {
+            page.html = Some(Box::new(data));
+            page.is_nofollow_page()
+        };
+        let d = page.html.as_ref().unwrap();
+        let follow_links = !sh.list_mode && next_depth <= sh.cfg.max_depth && (!page_nofollow || sh.cfg.follow_nofollow);
+        let wanted = |u: &str| -> bool {
+            let path_ok = sh.include.as_ref().is_none_or(|re| re.is_match(u)) && sh.exclude.as_ref().is_none_or(|re| !re.is_match(u));
+            path_ok
+        };
+        for l in &d.links {
+            if l.nofollow && !sh.cfg.follow_nofollow {
+                continue;
+            }
+            if is_internal(sh, &l.url) {
+                if follow_links && wanted(&l.url) {
+                    found.push(Job { url: l.url.clone(), depth: next_depth, source: Source::Link });
+                }
+            } else if sh.cfg.check_external {
+                found.push(Job { url: l.url.clone(), depth: next_depth, source: Source::Link });
+            }
+        }
+        if sh.cfg.check_resources {
+            let res = d
+                .images
+                .iter()
+                .map(|i| (&i.url, Source::Image))
+                .chain(d.scripts.iter().map(|s| (&s.url, Source::Script)))
+                .chain(d.stylesheets.iter().map(|s| (s, Source::Stylesheet)));
+            for (u, src) in res {
+                if is_internal(sh, u) || sh.cfg.check_external {
+                    found.push(Job { url: u.clone(), depth: next_depth, source: src });
+                }
+            }
+        }
+        if !sh.list_mode {
+            let related = d
+                .canonicals
+                .iter()
+                .map(|u| (u, Source::Canonical))
+                .chain(d.hreflang.iter().map(|(_, u)| (u, Source::Hreflang)))
+                .chain(d.rel_next.iter().chain(d.rel_prev.iter()).map(|u| (u, Source::Pagination)))
+                .chain(d.amphtml.iter().map(|u| (u, Source::Amp)));
+            for (u, src) in related {
+                if is_internal(sh, u) {
+                    found.push(Job { url: u.clone(), depth: next_depth, source: src });
+                }
+            }
+        }
+    } else {
+        page.html = Some(Box::new(data));
+    }
+    (page, found)
+}

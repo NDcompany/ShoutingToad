@@ -1,0 +1,36 @@
+[package]
+name = "shouting-toad"
+version = "1.0.0"
+edition = "2021"
+description = "The ShoutingToad SEO Spider is a website crawler that audits your site for over 300 SEO issues to help improve both SEO, and UX and more"
+authors = ["N&D Co. <contact@ndcompany.in>"]
+repository = "https://github.com/NDcompany/ShoutingToad"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+keywords = ["seo", "crawler", "spider", "audit", "technical-seo"]
+categories = ["command-line-utilities", "web-programming::http-client", "gui"]
+
+[dependencies]
+eframe = { version = "0.30", default-features = true, features = ["persistence"] }
+egui = "0.30"
+egui_extras = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "http2", "json"] }
+url = { version = "2.5", features = ["serde"] }
+regex = "1.11"
+aho-corasick = "1"
+scraper = "0.22"
+roxmltree = "0.20"
+flate2 = "1.0"
+brotli-decompressor = "4.0"
+encoding_rs = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
