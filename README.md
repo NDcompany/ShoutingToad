@@ -29,6 +29,7 @@
 - **Health score and overview dashboard.** See what matters first, then click any issue to list every affected URL.
 - **URL inspector.** Shows the details, issues, inlinks, outlinks, images, HTTP headers, a Google snippet preview (desktop and mobile) and the structured data of any URL.
 - **List mode.** Audit just the URLs you paste in, without following links.
+- **Community rule packs.** Add your own checks as simple TOML files, or use the Shopify, WordPress, Local SEO and E-commerce packs. See [Rule packs](#rule-packs).
 - **Custom search and extraction.** Count or extract anything in the HTML with regular expressions.
 - **Title and description writer.** Suggests new titles and meta descriptions for pages that need them, using your own API key for Anthropic Claude, OpenAI or any OpenAI-compatible server (Ollama, LM Studio, OpenRouter), or Google Gemini. With no key it falls back to offline rules. Keys are never saved to disk.
 - **Internal link finder.** Finds pages that mention another page's topic without linking to it.
@@ -83,6 +84,27 @@ Use `--fail-on high|medium|low` to exit with code 2 when the site has Issues at 
     tar -xzf st.tar.gz
     ./shouting-toad crawl "https://staging.example.com" --out seo-report --fail-on high
 ```
+
+## Rule packs
+
+Rule packs add checks written as small TOML files: CSS selectors, regexes on the HTML, URL, headers, status codes and page metrics, combined with `all`, `any` and `not`. Their findings appear everywhere the built-in checks do, including `--fail-on-check`.
+
+```toml
+[[rule]]
+id = "old-shop-links"
+name = "Links to the old shop"
+kind = "issue"
+priority = "high"
+fix = "Link to /store/ instead."
+when = { selector = 'a[href*="shop.example.com"]' }
+```
+
+```text
+shouting-toad crawl https://example.com --rules rules/wordpress.toml
+shouting-toad rules validate my-pack.toml
+```
+
+In the app: **Configuration → Rule packs…**. Starter packs for Shopify, WordPress, Local SEO and E-commerce are in [`rules/`](rules). The [rule pack guide](docs/rule-packs.md) covers the full format, testing and sharing; publish your own pack with the GitHub topic `shoutingtoad-rules`.
 
 ## What it checks
 

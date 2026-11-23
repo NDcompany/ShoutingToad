@@ -1,0 +1,132 @@
+# E-commerce rule pack for ShoutingToad (any platform). Format: docs/rule-packs.md
+# Run it with:  shouting-toad crawl https://shop.example.com --rules rules/ecommerce.toml
+
+[pack]
+id = "ecommerce"
+name = "E-commerce"
+version = "1.0.0"
+author = "N&D Co."
+homepage = "https://github.com/NDcompany/ShoutingToad/tree/main/rules"
+description = "Online shop checks for any platform: indexable faceted and account URLs, crawlable add-to-cart links, and product structured data that merchant listings use."
+min_version = "1.0.0"
+
+[[rule]]
+id = "faceted-url-indexable"
+name = "Sorted or filtered listing URL is indexable"
+category = "URL"
+kind = "warning"
+priority = "medium"
+description = "A URL with sort or filter parameters (sort, orderby, color, size, price, filter…) is indexable on its own. Faceted navigation creates a near-endless number of these near-duplicate listings, which wastes crawl budget and splits ranking signals."
+fix = "Canonicalise sorted and filtered views to the unfiltered category (or noindex them), and keep facet links out of the crawl with robots.txt rules or links that are not plain <a href>. Index only the few filter combinations that have their own search demand."
+scope = "indexable"
+when = { url = '[?&](sort|sort_by|orderby|order|dir|filter|filter_[a-z0-9_]+|filter\.[^=&]+|color|colour|size|price|min_price|max_price|brand|rating|availability|in_stock|pa_[a-z0-9_-]+)=' }
+
+[[rule]]
+id = "cart-account-indexable"
+name = "Cart, checkout or account page is indexable"
+category = "Directives"
+kind = "warning"
+priority = "medium"
+description = "A cart, checkout, account, login, wishlist or compare page is indexable. These pages are different for every visitor and have nothing to rank for."
+fix = "Add <meta name=\"robots\" content=\"noindex\"> to these templates (most platforms and SEO plugins have a setting), and do not list them in the sitemap."
+scope = "indexable"
+when = { url = '(?i)/(cart|basket|checkout|my-account|account|login|register|wishlist|compare)(/|\?|$)' }
+
+[[rule]]
+id = "add-to-cart-links"
+name = "Crawlable add-to-cart links"
+category = "Links"
+kind = "warning"
+priority = "low"
+description = "The page has plain links that add a product to the cart (?add-to-cart= or /cart/add) without rel=\"nofollow\". Crawlers follow them, which creates sessions and carts and wastes crawl budget on URLs that only redirect."
+fix = "Use a form or button for add-to-cart actions, or add rel=\"nofollow\" to the links (WooCommerce's own templates do), and disallow the parameter in robots.txt."
+when = { selector = 'a[href*="add-to-cart="]:not([rel~="nofollow"]), a[href*="/cart/add"]:not([rel~="nofollow"])' }
+
+[[rule]]
+id = "product-no-breadcrumb-schema"
+name = "Product page without BreadcrumbList markup"
+category = "Structured Data"
+kind = "opportunity"
+priority = "low"
+description = "The page has Product structured data but no BreadcrumbList. Breadcrumb markup lets Google show the category path instead of the URL in results and explains where the product sits in the shop."
+fix = "Add BreadcrumbList JSON-LD that mirrors the visible breadcrumb (Home › Category › Product)."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"' },
+  { selector = 'script[type="application/ld+json"]', matches = 'BreadcrumbList', exists = false },
+  { selector = '[itemtype*="schema.org/BreadcrumbList"]', exists = false },
+]
+
+[[rule]]
+id = "product-no-identifier"
+name = "Product markup without GTIN, MPN or ISBN"
+category = "Structured Data"
+kind = "opportunity"
+priority = "low"
+description = "The Product structured data has no global identifier (gtin, gtin8, gtin12, gtin13, gtin14, mpn or isbn). Google uses identifiers to match a product across sellers for merchant listings and Shopping."
+fix = "Add the product's barcode as gtin13 (or the right gtin length), or the manufacturer part number as mpn, to the Product (or each variant's) JSON-LD."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"' },
+  { selector = 'script[type="application/ld+json"]', matches = '"(gtin|gtin8|gtin12|gtin13|gtin14|mpn|isbn)"\s*:', exists = false },
+]
+
+[[rule]]
+id = "offer-no-return-policy"
+name = "Product offer without return policy markup"
+category = "Structured Data"
+kind = "opportunity"
+priority = "low"
+description = "The Product structured data has no hasMerchantReturnPolicy. Google can show return terms in merchant listings when they are marked up on the offer or set store-wide (Organization markup or Merchant Center)."
+fix = "Add hasMerchantReturnPolicy (MerchantReturnPolicy with applicableCountry, returnPolicyCategory and merchantReturnDays) to the Offer, or set one store-wide policy in Organization markup or Merchant Center and ignore this check."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"' },
+  { selector = 'script[type="application/ld+json"]', matches = '"hasMerchantReturnPolicy"', exists = false },
+]
+
+[[rule]]
+id = "offer-no-shipping"
+name = "Product offer without shipping details"
+category = "Structured Data"
+kind = "opportunity"
+priority = "low"
+description = "The Product structured data has no shippingDetails. Google can show shipping cost and delivery time in merchant listings when they are marked up on the offer or set store-wide in Merchant Center."
+fix = "Add shippingDetails (OfferShippingDetails with shippingRate, shippingDestination and deliveryTime) to the Offer, or configure shipping in Merchant Center and ignore this check."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"' },
+  { selector = 'script[type="application/ld+json"]', matches = '"shippingDetails"', exists = false },
+]
+
+[[rule]]
+id = "price-zero"
+name = "Product price is 0 in structured data"
+category = "Structured Data"
+kind = "warning"
+priority = "medium"
+description = "An offer in the structured data has a price of 0. Unless the product really is free, this is usually a variant or template bug, and Google may show the product as free or reject the listing."
+fix = "Output the real price of the selected or cheapest available variant. Leave out offers for products that have no price."
+when = { selector = 'script[type="application/ld+json"]', matches = '"price"\s*:\s*"?0+(\.0+)?"?\s*[,}]' }
+
+[[rule]]
+id = "out-of-stock"
+name = "Product is out of stock"
+category = "Content"
+kind = "opportunity"
+priority = "low"
+description = "The structured data marks the product as OutOfStock. Listing these pages helps decide what to do with them: keep the page if the product comes back, otherwise link to alternatives or redirect it to the closest product or category."
+fix = "Keep temporarily unavailable products live with links to similar products. Redirect (301) discontinued products to their replacement or category."
+when = { any = [
+  { selector = 'script[type="application/ld+json"]', matches = '"availability"\s*:\s*"(https?://schema\.org/)?OutOfStock"' },
+  { selector = 'link[itemprop="availability"][href*="OutOfStock"]' },
+] }
+
+[[rule]]
+id = "thin-product-page"
+name = "Product page with little text"
+category = "Content"
+kind = "opportunity"
+priority = "low"
+description = "A page with Product structured data has fewer than 150 words of text. Manufacturer one-liners give search engines and shoppers little to go on and are often duplicated across many shops."
+fix = "Write a unique description: what it is for, materials, sizes, care, what is in the box. Add specifications and answers to common questions."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"' },
+  { word_count = '< 150' },
+]

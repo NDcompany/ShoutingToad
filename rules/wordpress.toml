@@ -1,0 +1,149 @@
+# WordPress rule pack for ShoutingToad. Format: docs/rule-packs.md
+# Run it with:  shouting-toad crawl https://example.com --rules rules/wordpress.toml
+
+[pack]
+id = "wordpress"
+name = "WordPress"
+version = "1.0.0"
+author = "N&D Co."
+homepage = "https://github.com/NDcompany/ShoutingToad/tree/main/rules"
+description = "Default WordPress output that hurts SEO, leaks details or slows pages down: plain permalinks, attachment and archive pages, leftover default content, version and endpoint disclosure, legacy scripts."
+min_version = "1.0.0"
+
+[[rule]]
+id = "plain-permalink"
+name = "Plain ?p= or ?page_id= permalink"
+category = "URL"
+kind = "warning"
+priority = "medium"
+description = "An indexable WordPress page answers on a plain permalink (?p=123 or ?page_id=123) instead of redirecting to a readable URL. Plain permalinks carry no words, and when the setting is changed later every post is reachable at two addresses unless the old ones redirect."
+fix = "Settings → Permalinks: choose 'Post name'. WordPress then 301-redirects the ?p= URLs to the new addresses."
+scope = "indexable"
+when = [
+  { url = '[?&](p|page_id)=\d+(&|$)' },
+  { html = '/wp-(content|includes)/' },
+]
+
+[[rule]]
+id = "attachment-page"
+name = "Attachment page is indexable"
+category = "Content"
+kind = "issue"
+priority = "medium"
+description = "WordPress can give every uploaded file its own page (body class single-attachment) that holds little more than the image. These thin pages are indexable here and compete with the posts the images belong to."
+fix = "Set the wp_attachment_pages_enabled option to 0 (WordPress 6.4+ turns attachment pages off for new installs only), or use your SEO plugin's 'redirect attachment URLs to the file' setting."
+scope = "indexable"
+when = { selector = 'body.single-attachment' }
+
+[[rule]]
+id = "author-archive-indexable"
+name = "Author archive is indexable"
+category = "Content"
+kind = "opportunity"
+priority = "low"
+description = "Author archives (/author/name/) list the same posts as the blog. On a single-author site each one is a near-duplicate of the blog index."
+fix = "On a single-author site, noindex or disable author archives in your SEO plugin. On a multi-author site keep them and add a real bio so each one is unique."
+scope = "indexable"
+when = { selector = 'body.archive.author' }
+
+[[rule]]
+id = "date-archive-indexable"
+name = "Date archive is indexable"
+category = "Content"
+kind = "warning"
+priority = "low"
+description = "Year, month and day archives (/2024/05/) repeat posts that are already listed in categories and the blog index, adding thin, duplicate pages to the index."
+fix = "Noindex or disable date archives in your SEO plugin, and remove archive or calendar widgets that link to them."
+scope = "indexable"
+when = { selector = 'body.archive.date' }
+
+[[rule]]
+id = "uncategorized"
+name = "Default 'Uncategorized' category is live"
+category = "Content"
+kind = "warning"
+priority = "low"
+description = "The default WordPress category is still in use and has its own archive page. 'Uncategorized' tells visitors and search engines nothing about the posts in it."
+fix = "Rename the default category (Posts → Categories) to a real topic, or move its posts into real categories."
+when = { url = '/category/uncategori[sz]ed/?$' }
+
+[[rule]]
+id = "sample-content"
+name = "Default 'Sample Page' or 'Hello world!' post is live"
+category = "Content"
+kind = "warning"
+priority = "medium"
+description = "The Sample Page or Hello world! post that WordPress creates on install is still published."
+fix = "Delete the sample page and the Hello world! post (with its sample comment), then empty the trash."
+when = { url = '/(sample-page|hello-world)/?$' }
+
+[[rule]]
+id = "default-tagline"
+name = "Default tagline 'Just another WordPress site'"
+category = "Page Titles"
+kind = "issue"
+priority = "medium"
+description = "The page still shows the tagline WordPress set by default before version 6.1. Themes and SEO plugins put the tagline in titles and descriptions, where it looks unfinished."
+fix = "Settings → General: replace the tagline with a short description of the site, or clear it."
+when = { html = '(?i)Just another WordPress (site|blog)' }
+
+[[rule]]
+id = "generator-version"
+name = "WordPress version in the generator meta tag"
+category = "Security"
+kind = "warning"
+priority = "low"
+description = "<meta name=\"generator\" content=\"WordPress x.y\"> tells anyone which WordPress version runs the site, which makes it easy to match against known vulnerabilities."
+fix = "Keep WordPress updated, and remove the tag with remove_action('wp_head', 'wp_generator') or your security plugin."
+when = { selector = 'meta[name="generator" i]', attr = "content", matches = '^WordPress \d' }
+
+[[rule]]
+id = "xmlrpc-advertised"
+name = "XML-RPC endpoint advertised in the page head"
+category = "Security"
+kind = "opportunity"
+priority = "low"
+description = "The page links to xmlrpc.php (pingback or RSD link). XML-RPC is a common target for password guessing and pingback abuse, and most sites no longer need it."
+fix = "If you do not use the mobile apps, Jetpack or pingbacks, disable XML-RPC (add_filter('xmlrpc_enabled', '__return_false')), and remove the rsd_link action from wp_head."
+when = { selector = 'link[rel="pingback"], link[rel="EditURI"]', attr = "href", matches = 'xmlrpc\.php' }
+
+[[rule]]
+id = "rest-api-advertised"
+name = "REST API advertised in the page head"
+category = "Security"
+kind = "opportunity"
+priority = "low"
+description = "<link rel=\"https://api.w.org/\"> points bots at /wp-json/. Unless it is restricted, /wp-json/wp/v2/users lists the login names of everyone who has published a post."
+fix = "Remove the link with remove_action('wp_head', 'rest_output_link_wp_head'), and restrict the users endpoint to logged-in users (most security plugins have a setting for it)."
+when = { selector = 'link[rel="https://api.w.org/"]' }
+
+[[rule]]
+id = "emoji-script"
+name = "WordPress emoji script on every page"
+category = "Performance"
+kind = "opportunity"
+priority = "low"
+description = "WordPress adds an inline emoji detection script and stylesheet to every page. Current browsers draw emoji themselves, so this is wasted bytes and main-thread work."
+fix = "Remove it with remove_action('wp_head', 'print_emoji_detection_script', 7) and remove_action('wp_print_styles', 'print_emoji_styles'), or your performance plugin's 'disable emojis' setting."
+when = { html = 'wpemojiSettings|wp-emoji-release\.min\.js' }
+
+[[rule]]
+id = "jquery-migrate"
+name = "jQuery Migrate is loaded"
+category = "Performance"
+kind = "opportunity"
+priority = "low"
+description = "jquery-migrate.js only exists to keep code written for old jQuery versions working. If no plugin or theme needs it, it is an extra script on every page."
+fix = "Check the browser console for JQMIGRATE warnings. If there are none, dequeue jquery-migrate or use your performance plugin's setting."
+when = { selector = 'script[src*="jquery-migrate"]' }
+
+[[rule]]
+id = "replytocom"
+name = "?replytocom= comment URL is indexable"
+category = "URL"
+kind = "issue"
+priority = "medium"
+description = "Comment reply links (?replytocom=123) create a copy of the post for every comment, and this copy is indexable."
+fix = "Canonicalise or redirect ?replytocom= URLs to the post (most SEO plugins can strip the parameter), and make reply links JavaScript-only by enabling threaded comments."
+scope = "indexable"
+when = { url = '[?&]replytocom=\d+' }
