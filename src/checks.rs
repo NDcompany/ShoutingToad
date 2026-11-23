@@ -46,6 +46,8 @@ pub const CATEGORIES: &[&str] = &[
     "Links",
     "Resources",
     "Performance",
+    "Core Web Vitals",
+    "Rendering",
     "Mobile",
     "Accessibility",
     "Validation",
@@ -564,6 +566,10 @@ fn js_rendered(h: &HtmlData) -> bool {
     h.word_count < 50 && (h.scripts.len() >= 3 || h.inline_script_bytes > 30_000)
 }
 
+mod a11y_render;
+mod cwv;
+mod render;
+
 fn build() -> Vec<Check> {
     let mut v: Vec<Check> = Vec::with_capacity(460);
     response_codes(&mut v);
@@ -588,6 +594,9 @@ fn build() -> Vec<Check> {
     mobile_accessibility(&mut v);
     validation(&mut v);
     ai_search::ai_search(&mut v);
+    render::add(&mut v);
+    a11y_render::add(&mut v);
+    cwv::add(&mut v);
     v
 }
 

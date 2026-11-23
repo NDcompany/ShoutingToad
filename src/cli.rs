@@ -49,6 +49,13 @@ OPTIONS:
     --no-resources          Do not check images, CSS and JavaScript
     --no-sitemaps           Do not crawl URLs found only in XML sitemaps
     --no-ai-bots            Skip the AI crawler access test after the crawl
+    --render                Render pages with the Chrome/Edge installed on this computer
+                            (compares raw and rendered HTML; adds contrast and focus checks)
+    --chrome <PATH>         Browser to render with (default: detect Chrome, Chromium, Edge)
+    --render-tabs <N>       Browser tabs rendering at once (default 4)
+    --crux-key <KEY>        Google API key for Chrome UX Report field data (Core Web
+                            Vitals); or set CRUX_API_KEY. Never written to disk
+    --crux-max-urls <N>     Indexable URLs to query in CrUX besides the origin (default 500)
     --fail-on <LEVEL>       Exit with code 2 if any Issue of this priority or higher
                             is found: high, medium or low
     --fail-on-check <ID>    Exit with code 2 if this check is triggered (repeatable;
@@ -67,7 +74,8 @@ OPTIONS:
 
 OUTPUT FILES:
     crawl, list: report.html, issues.csv, issue_urls.csv, internal.csv, inlinks.csv,
-        outlinks.csv, images.csv, redirects.csv, ai_bots.csv, crawl.shoutingtoad (open in the app)
+        outlinks.csv, images.csv, redirects.csv, ai_bots.csv, accessibility.html,
+        accessibility.csv, crawl.shoutingtoad (open in the app)
     compare, --baseline: comparison.html, comparison.csv (per check),
         comparison_issue_urls.csv (new and fixed URLs), url_changes.csv
     migrate: redirect_map.csv (old,new,confidence,reason), redirects.htaccess,
@@ -124,6 +132,7 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     let mut gate = Gate::default();
     let mut quiet = false;
     let mut target: Option<String> = None;
+    let mut crux = crate::cwv::CruxConfig::default();
 
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -152,6 +161,16 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             "--no-resources" => cfg.check_resources = false,
             "--no-sitemaps" => cfg.crawl_sitemaps = false,
             "--no-ai-bots" => cfg.ai_bots = false,
+            "--render" => cfg.render = true,
+            "--chrome" => {
+                cfg.browser_path = val("--chrome")?;
+                cfg.render = true;
+            }
+            "--render-tabs" => {
+                cfg.render_tabs = num(val("--render-tabs")?, "--render-tabs")?.clamp(1, 16)
+            }
+            "--crux-key" => crux.api_key = val("--crux-key")?,
+            "--crux-max-urls" => crux.max_urls = num(val("--crux-max-urls")?, "--crux-max-urls")?,
             "--quiet" | "-q" => quiet = true,
             "--fail-on" => fail_on = Some(compare::parse_level(&val("--fail-on")?)?),
             "--fail-on-check" => fail_check_ids.push(val("--fail-on-check")?),
@@ -212,6 +231,11 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         vec![target.clone()]
     };
 
+    if cfg.render {
+        if let Err(e) = crate::render::find_browser(&cfg.browser_path) {
+            eprintln!("warning: {e}");
+        }
+    }
     let started = Instant::now();
     let handle = crawler::start(seeds.clone(), list_mode, cfg)?;
     let mut crawl = Crawl {
@@ -246,6 +270,36 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     crawl.finished = chrono::Local::now().to_rfc3339();
     crawl.pages.sort_by_key(|p| p.id);
     let crawl_secs = started.elapsed().as_secs_f32();
+    if !crux.api_key.is_empty() {
+        let (origin, urls) = crate::cwv::targets(&crawl, crux.max_urls);
+        if !quiet {
+            eprintln!(
+                "Querying Chrome UX Report for {origin} and {} URLs …",
+                urls.len()
+            );
+        }
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let r = crate::cwv::fetch(&crux, &origin, &urls, &never, |done, total| {
+            if !quiet && done % 25 == 0 {
+                eprintln!("  CrUX {done}/{total}");
+            }
+        });
+        crate::cwv::apply(&mut crawl, &r);
+        let with = r.urls.iter().filter(|(_, c)| c.has_data()).count();
+        eprintln!(
+            "CrUX: origin {}, {with} of {} URLs with field data ({} queries)",
+            if r.origin.as_ref().is_some_and(|o| o.has_data()) {
+                "has data"
+            } else {
+                "has no data"
+            },
+            r.urls.len(),
+            r.queries
+        );
+        if let Some(e) = &r.error {
+            eprintln!("warning: {e}");
+        }
+    }
 
     let t_audit = Instant::now();
     let audit = audit::run(&crawl);
@@ -301,6 +355,18 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         (
             "ai_bots.csv",
             Box::new(move || file("ai_bots.csv")?.write_all(report::ai_bots_csv(c).as_bytes())),
+        ),
+        (
+            "accessibility.html",
+            Box::new(move || {
+                file("accessibility.html")?.write_all(crate::wcag::html(c, a).as_bytes())
+            }),
+        ),
+        (
+            "accessibility.csv",
+            Box::new(move || {
+                file("accessibility.csv")?.write_all(crate::wcag::csv(c, a).as_bytes())
+            }),
         ),
         (
             "crawl.shoutingtoad",

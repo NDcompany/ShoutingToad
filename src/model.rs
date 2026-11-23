@@ -202,6 +202,12 @@ pub struct Page {
     pub html: Option<Box<HtmlData>>,
     pub custom_search_hits: usize,
     pub custom_extract: Vec<String>,
+    /// After JavaScript rendering (only when rendering was on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<Box<crate::render::Rendered>>,
+    /// Chrome UX Report field data (only when queried).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwv: Option<Box<crate::cwv::CwvRecord>>,
 }
 
 impl Page {
@@ -412,6 +418,9 @@ pub struct SiteInfo {
     /// Keys of the rule-pack tests evaluated on every HTML page of this crawl.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_probes: Vec<String>,
+    /// Chrome UX Report field data for the whole origin (only when queried).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwv_origin: Option<crate::cwv::CwvRecord>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

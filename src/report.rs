@@ -120,10 +120,24 @@ pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::
             "Issues",
             "Custom Search Hits",
             "Custom Extraction",
-        ],
+            "Rendered Word Count",
+            "JS-only Links",
+            "JS Errors",
+        ]
+        .iter()
+        .chain(&crate::cwv::CSV_HEADERS)
+        .copied()
+        .collect::<Vec<_>>(),
     )?;
     for (i, p) in crawl.pages.iter().enumerate() {
         let h = p.html.as_deref();
+        let r = p.rendered.as_deref();
+        let rendered = [
+            r.map(|r| r.word_count.to_string()).unwrap_or_default(),
+            r.map(|r| r.new_links_total.to_string()).unwrap_or_default(),
+            r.map(|r| r.js_errors.len().to_string()).unwrap_or_default(),
+        ];
+        let v = crate::cwv::csv_cells(p);
         out.row(&[
             &p.url,
             &p.kind(),
@@ -158,6 +172,19 @@ pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::
             &audit.page_issues.get(i).map(|v| v.len()).unwrap_or(0),
             &p.custom_search_hits,
             &p.custom_extract.join(" | "),
+            &rendered[0],
+            &rendered[1],
+            &rendered[2],
+            &v[0],
+            &v[1],
+            &v[2],
+            &v[3],
+            &v[4],
+            &v[5],
+            &v[6],
+            &v[7],
+            &v[8],
+            &v[9],
         ])?;
     }
     out.finish()
@@ -658,7 +685,7 @@ footer a {{ color:inherit; }}
 <p class="muted">{checks} checks were run across {cat_count} categories.</p>
 <table><thead><tr><th>Category</th><th class=num>Checks</th><th class=num>Issues</th><th class=num>Warnings</th><th class=num>Opportunities</th></tr></thead><tbody>{cats}</tbody></table>
 
-{ai}
+{ai}{rendering}{vitals}
 <h2>All findings, most important first</h2>
 {rows}
 
@@ -677,6 +704,8 @@ footer a {{ color:inherit; }}
         s4 = status_counts[4],
         checks = cat.len(),
         cat_count = all_cats.len(),
+        rendering = crate::render::report_section(crawl),
+        vitals = crate::cwv::report_section(crawl),
         version = env!("CARGO_PKG_VERSION"),
         ai = crate::ai_search::html_section(crawl),
     )

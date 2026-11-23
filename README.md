@@ -24,7 +24,7 @@
 ## Features
 
 - **Fast, polite crawler.** Multi-threaded, with a configurable request delay. Respects robots.txt by default (one checkbox, or `--ignore-robots`, turns that off for sites you own), reads XML, RSS, Atom and text sitemaps, handles gzip and Brotli, and follows redirects, canonicals, hreflang and pagination links.
-- **450 checks across 28 categories.** Each finding comes with its type (Issue, Warning or Opportunity), a priority, what it means and how to fix it.
+- **474 checks across 30 categories.** Each finding comes with its type (Issue, Warning or Opportunity), a priority, what it means and how to fix it.
 - **AI search readiness.** Checks what AI crawlers can really fetch, not just what robots.txt says: the start page and the most-linked pages are requested with the published user agents of 18 AI crawlers (search, user-triggered and training bots from OpenAI, Anthropic, Perplexity, Google, Apple, Meta, Common Crawl and others) and compared with a normal request, so firewall and CDN blocks, bot challenges, thinner content and bot-specific noindex show up. It also flags content AI crawlers cannot see without JavaScript and scores how quotable each section of a page is.
 - **Site-wide analysis.** Finds duplicate and near-duplicate content, orphan pages, redirect chains and loops, broken internal and external links, hreflang return links, canonical chains, crawl depth and sitemap problems.
 - **Health score and overview dashboard.** See what matters first, then click any issue to list every affected URL.
@@ -39,7 +39,10 @@
 - **Crawl comparison.** Compare any two crawls: new, fixed and persisting findings per check, added and removed URLs, and changed status, indexability, titles, descriptions, H1s, canonicals, meta robots and word counts, with the health score change.
 - **Site migrations.** Proposes a redirect for every old URL (same path, then title or H1, similar content, similar URL words) with a confidence score, lets you correct it, and exports the map plus ready-to-paste Apache, Nginx, Netlify and Cloudflare rules. Then checks the live redirects for 302s, chains, 404s and wrong targets.
 - **Headless CLI** for scripts and CI pipelines, with exit codes for quality gates.
-- **No account, no limits, no telemetry.** It only talks to the site you crawl and, if you choose, your AI provider.
+- **Optional JavaScript rendering.** Renders pages with the Chrome, Chromium or Edge already on your computer (nothing is downloaded) and shows **raw vs rendered** side by side: what browsers and Google see against what crawlers that don't run JavaScript, such as most AI crawlers, see. Flags content, links, titles, canonicals and robots tags that only exist after JavaScript, JavaScript errors and render timeouts, and follows links that only appear after rendering.
+- **Accessibility (WCAG 2.2 / EAA) starter report.** Maps the accessibility, mobile and image checks to WCAG 2.2 success criteria (Level A and AA), with pass/fail counts and affected URLs. With rendering on it also measures text colour contrast (1.4.3), visible keyboard focus (2.4.7) and mouse-only click handlers (2.1.1). Automated testing covers only part of WCAG; the report says so plainly and is not a compliance statement.
+- **Core Web Vitals field data.** With your own free Google API key for the Chrome UX Report, adds real-user LCP, INP, CLS, FCP and TTFB (phone and desktop) for the site and each indexable URL, and flags poor and needs-improvement values. The key is never saved to disk.
+- **No account, no limits, no telemetry.** It only talks to the site you crawl and, if you choose, your AI provider and the Chrome UX Report API.
 
 ## Install
 
@@ -80,7 +83,9 @@ shouting-toad validate-redirects migration/redirect_map.csv --out redirect-check
 shouting-toad --help
 ```
 
-Each run writes `report.html`, `issues.csv`, `issue_urls.csv`, `internal.csv`, `inlinks.csv`, `outlinks.csv`, `images.csv`, `redirects.csv`, `ai_bots.csv` and `crawl.shoutingtoad` (which opens in the app).
+Each run writes `report.html`, `issues.csv`, `issue_urls.csv`, `internal.csv`, `inlinks.csv`, `outlinks.csv`, `images.csv`, `redirects.csv`, `ai_bots.csv`, `accessibility.html`, `accessibility.csv` and `crawl.shoutingtoad` (which opens in the app).
+
+Add `--render` to render pages with your installed Chrome or Edge (`--chrome <path>` to pick one, `--render-tabs <n>` for parallel tabs), and `--crux-key <key>` (or the `CRUX_API_KEY` environment variable) for Core Web Vitals field data.
 
 Use `--fail-on high|medium|low` to exit with code 2 when the site has Issues at that priority or above, or `--fail-on-check <id>` to fail on specific checks. This makes ShoutingToad an SEO quality gate for deployments. **Reports → CI workflow** in the app generates a ready-made GitHub Actions workflow; the core of it is:
 
@@ -165,8 +170,10 @@ In the app: **Configuration → Rule packs…**. Starter packs for Shopify, Word
 | Links | 22 | Broken internal and external links, redirects, nofollow, broken #bookmarks, crawl depth |
 | Resources | 11 | Broken CSS and JavaScript, content that needs JavaScript to render, third-party scripts |
 | Performance | 18 | Slow responses, compression, HTTP/2, caching, render-blocking scripts, DOM size, page weight |
+| Core Web Vitals | 12 | Poor or needs-improvement LCP, INP and CLS field data, per URL and for the whole site (needs a CrUX API key) |
+| Rendering | 9 | Content and links only visible after JavaScript, title/H1/canonical/robots changed by JavaScript, JS errors, render timeouts (needs rendering on) |
 | Mobile | 7 | Viewport, zoom disabled, plugins, icons |
-| Accessibility | 13 | Language, link and button names, form labels, captions, landmarks |
+| Accessibility | 16 | Language, link and button names, form labels, captions, landmarks; with rendering on, colour contrast, visible focus and keyboard access |
 | Validation | 12 | Doctype, invalid `<head>` elements, character encoding |
 | AMP | 3 | Broken or invalid AMP links |
 | AI Search | 9 | AI search crawlers blocked by a firewall/CDN or robots.txt, user-triggered fetchers blocked, bot-specific noindex, content invisible without JavaScript, low section quotability, training-crawler policy |

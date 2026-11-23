@@ -174,6 +174,8 @@ pub struct Ctx<'a> {
     redirect_targets: HashSet<&'a str>,
     /// Per installed rule-pack test: its slot in this crawl's `HtmlData::rule_probes`.
     pub rule_slots: Vec<Option<usize>>,
+    /// Targets of links that exist only after JavaScript rendering.
+    rendered_targets: FxSet<&'a str>,
 }
 
 impl<'a> Ctx<'a> {
@@ -238,6 +240,12 @@ impl<'a> Ctx<'a> {
             })
             .filter_map(|p| p.redirect_to.as_deref())
             .collect();
+        let rendered_targets = pages
+            .iter()
+            .filter(|p| ih(p))
+            .filter_map(|p| p.rendered.as_deref())
+            .flat_map(|r| r.new_links.iter().map(|u| u.as_str()))
+            .collect();
         let mut ctx = Ctx {
             crawl,
             by_url,
@@ -255,6 +263,7 @@ impl<'a> Ctx<'a> {
             start_id,
             redirect_targets,
             rule_slots: crate::rules::slots(&crawl.site.rule_probes),
+            rendered_targets,
         };
         // When the start URL redirects (http -> https, bare -> www), site-level checks belong to the final page.
         if let Some(seed) = pages.iter().find(|p| p.source == Some(Source::Seed)) {
@@ -269,7 +278,9 @@ impl<'a> Ctx<'a> {
 
     /// The page has internal links pointing at it, directly or through a redirect.
     pub fn linked(&self, p: &Page) -> bool {
-        !self.inlinks_of(p).is_empty() || self.redirect_targets.contains(p.url.as_str())
+        !self.inlinks_of(p).is_empty()
+            || self.redirect_targets.contains(p.url.as_str())
+            || self.rendered_targets.contains(p.url.as_str())
     }
 
     /// Only the URL index, for callers that just need [`Ctx::page`] / [`Ctx::follow`]
@@ -302,6 +313,7 @@ impl<'a> Ctx<'a> {
             start_id: None,
             redirect_targets: Default::default(),
             rule_slots: crate::rules::slots(&crawl.site.rule_probes),
+            rendered_targets: Default::default(),
         }
     }
 

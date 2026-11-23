@@ -45,6 +45,12 @@ pub struct Config {
     pub custom_extract: String,
     /// After the crawl, test what AI crawlers can fetch (see [`crate::ai_search`]).
     pub ai_bots: bool,
+    /// Render internal HTML pages with the installed Chrome/Edge (see [`crate::render`]).
+    pub render: bool,
+    /// Browser executable; empty = detect.
+    pub browser_path: String,
+    /// Browser tabs rendering at once (never more than `threads`).
+    pub render_tabs: usize,
 }
 
 impl Default for Config {
@@ -67,6 +73,9 @@ impl Default for Config {
             custom_search: String::new(),
             custom_extract: String::new(),
             ai_bots: true,
+            render: false,
+            browser_path: String::new(),
+            render_tabs: 4,
         }
     }
 }
@@ -169,6 +178,7 @@ struct Shared {
     ai_sample: crate::ai_search::Sampler,
     /// Rule-pack tests evaluated at parse time, fixed for the whole crawl.
     rules: Option<Arc<crate::rules::Active>>,
+    renderer: std::sync::OnceLock<crate::render::Pool>,
     tx: Sender<Event>,
 }
 
@@ -236,6 +246,7 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         internal_hosts: std::sync::RwLock::new(internal_hosts),
         root_domain,
         ai_sample: Default::default(),
+        renderer: std::sync::OnceLock::new(),
         tx,
     });
 
@@ -243,8 +254,50 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
     Ok(Handle { rx, stop, pause })
 }
 
+/// Closes the browser however the crawl ends (finished, stopped or a panic).
+struct CloseBrowser(Arc<Shared>);
+
+impl Drop for CloseBrowser {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.renderer.get() {
+            p.shutdown();
+        }
+    }
+}
+
 fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
+    let _close = CloseBrowser(sh.clone());
     // robots.txt + sitemaps for the primary host, before any page is fetched
+    let launch = sh.cfg.render.then(|| {
+        let sh = sh.clone();
+        thread::spawn(move || {
+            let c = &sh.cfg;
+            let tabs = c.render_tabs.clamp(1, c.threads.max(1));
+            match crate::render::Pool::launch(
+                &c.browser_path,
+                tabs,
+                &c.user_agent,
+                c.timeout_secs,
+                &sh.stop,
+            ) {
+                Ok(p) => {
+                    let _ = sh.tx.send(Event::Log(format!(
+                        "Rendering JavaScript with {} ({tabs} tabs)",
+                        p.browser
+                    )));
+                    let _ = sh.renderer.set(p);
+                    if sh.stop.load(Ordering::Relaxed) {
+                        if let Some(p) = sh.renderer.get() {
+                            p.shutdown();
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = sh.tx.send(Event::Log(e));
+                }
+            }
+        })
+    });
     let setup = {
         let (sh, start) = (sh.clone(), seeds[0].clone());
         thread::spawn(move || site_setup(&sh, &start))
@@ -254,7 +307,8 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
     } else {
         None
     };
-    let Some((mut site, sitemap_urls)) = setup else {
+    let launched = launch.is_none_or(|l| wait_or_stop(&sh, std::slice::from_ref(&l)));
+    let Some((mut site, sitemap_urls)) = setup.filter(|_| launched) else {
         let _ = sh.tx.send(Event::Finished);
         return;
     };
@@ -293,6 +347,7 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         drop(q);
         run_workers(&sh);
     }
+    drop(_close);
     // List mode audits given URLs (often old, redirecting ones): no "site" to test bots on.
     if sh.cfg.ai_bots && !sh.list_mode && !sh.stop.load(Ordering::Relaxed) {
         ai_phase(&sh, site, &seeds[0]);
@@ -1178,11 +1233,21 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
             page.html = Some(Box::new(data));
             page.is_nofollow_page()
         };
+        // JavaScript rendering: links that only exist after rendering are followed too.
+        let js_links = match sh.renderer.get() {
+            Some(pool) if !sh.stop.load(Ordering::Relaxed) => {
+                throttle(sh);
+                let (r, links) = pool.render(&job.url, page.html.as_deref().unwrap(), &sh.stop);
+                page.rendered = Some(Box::new(r));
+                links
+            }
+            _ => Vec::new(),
+        };
         let d = page.html.as_ref().unwrap();
         let follow_links = !sh.list_mode
             && next_depth <= sh.cfg.max_depth
             && (!page_nofollow || sh.cfg.follow_nofollow);
-        for l in &d.links {
+        for l in d.links.iter().chain(&js_links) {
             if l.nofollow && !sh.cfg.follow_nofollow {
                 continue;
             }
