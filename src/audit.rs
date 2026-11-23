@@ -172,6 +172,8 @@ pub struct Ctx<'a> {
     ok_urls_lower: FxMap<String, usize>,
     start_id: Option<usize>,
     redirect_targets: HashSet<&'a str>,
+    /// Targets of links that exist only after JavaScript rendering.
+    rendered_targets: FxSet<&'a str>,
 }
 
 impl<'a> Ctx<'a> {
@@ -236,6 +238,12 @@ impl<'a> Ctx<'a> {
             })
             .filter_map(|p| p.redirect_to.as_deref())
             .collect();
+        let rendered_targets = pages
+            .iter()
+            .filter(|p| ih(p))
+            .filter_map(|p| p.rendered.as_deref())
+            .flat_map(|r| r.new_links.iter().map(|u| u.as_str()))
+            .collect();
         let mut ctx = Ctx {
             crawl,
             by_url,
@@ -252,6 +260,7 @@ impl<'a> Ctx<'a> {
             ok_urls_lower,
             start_id,
             redirect_targets,
+            rendered_targets,
         };
         // When the start URL redirects (http -> https, bare -> www), site-level checks belong to the final page.
         if let Some(seed) = pages.iter().find(|p| p.source == Some(Source::Seed)) {
@@ -266,7 +275,9 @@ impl<'a> Ctx<'a> {
 
     /// The page has internal links pointing at it, directly or through a redirect.
     pub fn linked(&self, p: &Page) -> bool {
-        !self.inlinks_of(p).is_empty() || self.redirect_targets.contains(p.url.as_str())
+        !self.inlinks_of(p).is_empty()
+            || self.redirect_targets.contains(p.url.as_str())
+            || self.rendered_targets.contains(p.url.as_str())
     }
 
     /// Only the URL index, for callers that just need [`Ctx::page`] / [`Ctx::follow`]
@@ -298,6 +309,7 @@ impl<'a> Ctx<'a> {
             ok_urls_lower: FxMap::default(),
             start_id: None,
             redirect_targets: Default::default(),
+            rendered_targets: Default::default(),
         }
     }
 

@@ -46,6 +46,8 @@ pub const CATEGORIES: &[&str] = &[
     "Links",
     "Resources",
     "Performance",
+    "Core Web Vitals",
+    "Rendering",
     "Mobile",
     "Accessibility",
     "Validation",
@@ -516,6 +518,10 @@ fn valid_iso_date(s: &str) -> bool {
 
 // ---------------------------------------------------------------- catalogue
 
+mod a11y_render;
+mod cwv;
+mod render;
+
 fn build() -> Vec<Check> {
     let mut v: Vec<Check> = Vec::with_capacity(460);
     response_codes(&mut v);
@@ -539,6 +545,9 @@ fn build() -> Vec<Check> {
     performance(&mut v);
     mobile_accessibility(&mut v);
     validation(&mut v);
+    render::add(&mut v);
+    a11y_render::add(&mut v);
+    cwv::add(&mut v);
     v
 }
 

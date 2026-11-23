@@ -14,6 +14,10 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod a11y_ui;
+mod cwv_ui;
+mod render_ui;
+
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
 const OPPORTUNITY: Color32 = Color32::from_rgb(70, 145, 235);
@@ -125,6 +129,8 @@ enum Insp {
     Headers,
     Serp,
     Schema,
+    Rendered,
+    Vitals,
 }
 
 enum AiMsg {
@@ -189,6 +195,7 @@ pub struct App {
     screenshot: Option<String>,
     frames: usize,
     overview_stats: OverviewStats,
+    cwv: cwv_ui::CwvState,
 }
 
 /// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
@@ -300,6 +307,7 @@ impl App {
             screenshot,
             frames: 0,
             overview_stats: OverviewStats::default(),
+            cwv: Default::default(),
         }
     }
 
@@ -317,6 +325,7 @@ impl App {
 
     fn start(&mut self, seeds: Vec<String>, list: bool) {
         self.stop();
+        self.render_precheck();
         match crawler::start(seeds.clone(), list, self.settings.cfg.clone()) {
             Ok(h) => {
                 drop_in_background(std::mem::replace(
@@ -438,6 +447,7 @@ impl App {
                 "Crawl finished: {n} URLs audited against {} checks",
                 catalogue().len()
             ));
+            self.after_crawl_cwv();
         } else if self.audit_dirty
             && self.last_audit.elapsed() > Duration::from_secs(3)
             && self.crawl.pages.len() <= 8000
@@ -773,6 +783,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
         self.pump_ai();
+        self.pump_cwv(ctx);
         if matches!(self.state, State::Crawling | State::Paused)
             || self.ai_rx.is_some()
             || self.ai_test_rx.is_some()
@@ -909,6 +920,10 @@ impl App {
                         self.show_ai_settings = true;
                         ui.close_menu();
                     }
+                    if ui.button("Core Web Vitals (CrUX) API key…").clicked() {
+                        self.cwv.show = true;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     ui.label(RichText::new("Theme").small().weak());
                     for (t, name) in [
@@ -979,6 +994,13 @@ impl App {
                     {
                         self.show_report = true;
                         ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(has, egui::Button::new("Accessibility (WCAG/EAA) report…"))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        self.export_a11y();
                     }
                     if ui.button("CI workflow (GitHub Actions)…").clicked() {
                         if self.ci_url.is_empty() {
@@ -1711,6 +1733,8 @@ impl App {
                 (Insp::Headers, "HTTP Headers".to_string()),
                 (Insp::Serp, "SERP Snippet".to_string()),
                 (Insp::Schema, format!("Structured Data ({})", h.map(|h| h.json_ld.len()).unwrap_or(0))),
+                (Insp::Rendered, "Raw vs Rendered".to_string()),
+                (Insp::Vitals, "Core Web Vitals".to_string()),
             ];
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1889,6 +1913,8 @@ impl App {
                         }
                     }
                 }
+                Insp::Rendered => render_ui::rendered_tab(ui, p),
+                Insp::Vitals => cwv_ui::vitals_tab(ui, p, &self.crawl),
             });
             if let Some(c) = jump {
                 self.select_check(Some(c));
@@ -1962,6 +1988,7 @@ impl App {
         self.ci_dialog(ctx);
         self.catalogue_dialog(ctx);
         self.about_dialog(ctx);
+        self.cwv_dialog(ctx);
     }
 
     fn config_dialog(&mut self, ctx: &egui::Context) {
@@ -1992,6 +2019,8 @@ impl App {
             ui.checkbox(&mut c.check_resources, "Check images, CSS and JavaScript");
             ui.checkbox(&mut c.crawl_subdomains, "Treat subdomains as internal");
             ui.checkbox(&mut c.follow_nofollow, "Follow nofollow links");
+            ui.separator();
+            render_ui::settings(ui, c);
             ui.separator();
             ui.label(RichText::new("User agent").strong());
             egui::ComboBox::from_id_salt("ua").selected_text("Presets").show_ui(ui, |ui| {

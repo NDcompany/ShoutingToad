@@ -2061,7 +2061,12 @@ fn fixture_site_audit() {
         never.len(),
         never.join("\n  ")
     );
-    for c in CATEGORIES {
+    // Rendering and Core Web Vitals need a browser / the CrUX API: asserted in tests/render.rs
+    // and tests/cwv.rs.
+    for c in CATEGORIES
+        .iter()
+        .filter(|c| !["Rendering", "Core Web Vitals"].contains(c))
+    {
         let n = cat
             .iter()
             .filter(|x| x.category == *c && asserted.contains(&x.id))
