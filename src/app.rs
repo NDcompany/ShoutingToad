@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 mod compare;
 mod migrate;
+mod ai_search;
 
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
@@ -174,6 +175,7 @@ pub struct App {
     show_catalogue: bool,
     show_about: bool,
     show_list: bool,
+    show_ai_search: bool,
 
     ai_rx: Option<Receiver<AiMsg>>,
     ai_cancel: Arc<AtomicBool>,
@@ -289,6 +291,7 @@ impl App {
             show_catalogue: false,
             show_about: false,
             show_list: false,
+            show_ai_search: false,
             ai_rx: None,
             ai_cancel: Arc::new(AtomicBool::new(false)),
             ai_progress: (0, 0),
@@ -846,6 +849,10 @@ impl App {
             self.insp = Insp::Serp;
             self.rows_dirty = true;
         }
+        if self.frames == 1 && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("ai")
+        {
+            self.show_ai_search = true;
+        }
         if self.frames == 60 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
@@ -1013,6 +1020,13 @@ impl App {
                     {
                         self.opportunities = ai::link_opportunities(&self.crawl);
                         self.show_links = true;
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(has, egui::Button::new("AI search readiness…"))
+                        .clicked()
+                    {
+                        self.show_ai_search = true;
                         ui.close_menu();
                     }
                     if ui
@@ -1986,6 +2000,7 @@ impl App {
         self.about_dialog(ctx);
         self.compare_dialog(ctx);
         self.migrate_dialog(ctx);
+        self.ai_search_dialog(ctx);
     }
 
     fn config_dialog(&mut self, ctx: &egui::Context) {
@@ -2016,6 +2031,7 @@ impl App {
             ui.checkbox(&mut c.check_resources, "Check images, CSS and JavaScript");
             ui.checkbox(&mut c.crawl_subdomains, "Treat subdomains as internal");
             ui.checkbox(&mut c.follow_nofollow, "Follow nofollow links");
+            ui.checkbox(&mut c.ai_bots, "Test AI crawler access after the crawl (up to about 90 extra requests)");
             ui.separator();
             ui.label(RichText::new("User agent").strong());
             egui::ComboBox::from_id_salt("ua").selected_text("Presets").show_ui(ui, |ui| {

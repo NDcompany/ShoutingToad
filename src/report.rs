@@ -657,6 +657,7 @@ footer a {{ color:inherit; }}
 <p class="muted">{checks} checks were run across {cat_count} categories.</p>
 <table><thead><tr><th>Category</th><th class=num>Checks</th><th class=num>Issues</th><th class=num>Warnings</th><th class=num>Opportunities</th></tr></thead><tbody>{cats}</tbody></table>
 
+{ai}
 <h2>All findings, most important first</h2>
 {rows}
 
@@ -676,7 +677,60 @@ footer a {{ color:inherit; }}
         checks = cat.len(),
         cat_count = CATEGORIES.len(),
         version = env!("CARGO_PKG_VERSION"),
+        ai = crate::ai_search::html_section(crawl),
     )
+}
+
+/// AI crawler access test: one row per crawler and tested page.
+pub fn ai_bots_csv(crawl: &Crawl) -> String {
+    let mut out = row(&cells![
+        "Crawler",
+        "Operator",
+        "Purpose",
+        "URL",
+        "Robots.txt",
+        "Result",
+        "Status",
+        "Detail",
+        "Words (crawler)",
+        "Words (normal request)",
+        "Noindex for crawler"
+    ]);
+    let Some(r) = &crawl.site.ai_bots else {
+        return out;
+    };
+    for row_ in &r.rows {
+        let (Some(b), Some(p)) = (crate::ai_search::bot(&row_.bot), r.pages.get(row_.page)) else {
+            continue;
+        };
+        let fetched = row_.outcome != crate::ai_search::Outcome::NotFetched;
+        out.push_str(&row(&cells![
+            b.name,
+            b.operator,
+            b.purpose.label(),
+            p.url,
+            if row_.robots_allowed {
+                "Allowed"
+            } else {
+                "Disallowed"
+            },
+            crate::ai_search::cell(b, row_),
+            if fetched {
+                row_.status.to_string()
+            } else {
+                String::new()
+            },
+            row_.detail,
+            if fetched {
+                row_.words.to_string()
+            } else {
+                String::new()
+            },
+            p.words,
+            if row_.noindex { "Yes" } else { "" }
+        ]));
+    }
+    out
 }
 
 /// GitHub Actions workflow that runs a headless crawl on every push and on a schedule. With

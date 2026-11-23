@@ -26,6 +26,8 @@ pub struct Route {
     pub delay_ms: u64,
     /// Close the connection without answering.
     pub drop: bool,
+    /// Served instead when the User-Agent contains the needle (first match wins).
+    pub by_ua: Vec<(String, Route)>,
 }
 
 pub const SECURE_HEADERS: [(&str, &str); 6] = [
@@ -73,6 +75,11 @@ impl Route {
         self.delay_ms = ms;
         self
     }
+    /// Answer `route` to user agents containing `needle`.
+    pub fn for_ua(mut self, needle: &str, route: Route) -> Route {
+        self.by_ua.push((needle.into(), route));
+        self
+    }
 }
 
 /// 200 HTML page with good security headers, gzipped.
@@ -114,8 +121,8 @@ pub fn gz(data: &[u8]) -> Vec<u8> {
 
 // ------------------------------------------------------------------ server
 
-/// (Host header, method, request target) for every request received.
-type Log = Arc<Mutex<Vec<(String, String, String)>>>;
+/// (Host header, method, request target, user agent) for every request received.
+type Log = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
 pub struct Server {
     pub port: u16,
@@ -162,7 +169,21 @@ impl Server {
 
     /// True when any request (any host, any method) asked for this target.
     pub fn requested(&self, target: &str) -> bool {
-        self.log.lock().unwrap().iter().any(|(_, _, t)| t == target)
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, t, _)| t == target)
+    }
+
+    /// Requests whose User-Agent contains `needle`.
+    pub fn requests_by(&self, needle: &str) -> usize {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, _, ua)| ua.contains(needle))
+            .count()
     }
 
     pub fn request_count(&self) -> usize {
@@ -179,7 +200,7 @@ pub fn closed_port() -> u16 {
         .port()
 }
 
-fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, String)>>) {
+fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, String, String)>>) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -216,9 +237,10 @@ fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, Strin
     };
     let host = header("host");
     let accepts_gzip = header("accept-encoding").contains("gzip");
+    let ua = header("user-agent");
     log.lock()
         .unwrap()
-        .push((host, method.clone(), target.clone()));
+        .push((host, method.clone(), target.clone(), ua.clone()));
 
     let fallback = error(404);
     let path = target.split('?').next().unwrap_or("");
@@ -226,6 +248,11 @@ fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, Strin
         .get(&target)
         .or_else(|| routes.get(path))
         .unwrap_or(&fallback);
+    let route = route
+        .by_ua
+        .iter()
+        .find(|(needle, _)| ua.contains(needle.as_str()))
+        .map_or(route, |(_, r)| r);
     if route.delay_ms > 0 {
         thread::sleep(Duration::from_millis(route.delay_ms));
     }

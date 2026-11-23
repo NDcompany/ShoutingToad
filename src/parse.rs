@@ -95,7 +95,7 @@ fn has_ancestor(el: &ElementRef, name: &str) -> bool {
         .any(|a| a.value().as_element().is_some_and(|e| e.name() == name))
 }
 
-const BLOCKS: &[&str] = &[
+pub(crate) const BLOCKS: &[&str] = &[
     "p",
     "div",
     "li",
@@ -565,6 +565,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                         }
                     }
                     "googlebot" => d.meta_googlebot.push(content.clone()),
+                    n if crate::ai_search::bot(n).is_some() => {
+                        d.ai.bot_meta.push((n.to_string(), content.clone()))
+                    }
                     "viewport" => d.viewport = Some(content.clone()),
                     n if n.starts_with("twitter:") => {
                         d.twitter.push((n.to_string(), content.clone()))
@@ -947,6 +950,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         .find(|e| e.value().name() == "body");
     if let Some(body) = body {
         visible_text(body, &mut text);
+        crate::ai_search::quotability(body, &mut d.ai);
     }
     let words: Vec<String> = text
         .split_whitespace()

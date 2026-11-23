@@ -45,6 +45,7 @@ OPTIONS:
     --no-external           Do not check external links
     --no-resources          Do not check images, CSS and JavaScript
     --no-sitemaps           Do not crawl URLs found only in XML sitemaps
+    --no-ai-bots            Skip the AI crawler access test after the crawl
     --fail-on <LEVEL>       Exit with code 2 if any Issue of this priority or higher
                             is found: high, medium or low
     --fail-on-check <ID>    Exit with code 2 if this check is triggered (repeatable;
@@ -61,7 +62,7 @@ OPTIONS:
 
 OUTPUT FILES:
     crawl, list: report.html, issues.csv, issue_urls.csv, internal.csv, inlinks.csv,
-        outlinks.csv, images.csv, redirects.csv, crawl.shoutingtoad (open in the app)
+        outlinks.csv, images.csv, redirects.csv, ai_bots.csv, crawl.shoutingtoad (open in the app)
     compare, --baseline: comparison.html, comparison.csv (per check),
         comparison_issue_urls.csv (new and fixed URLs), url_changes.csv
     migrate: redirect_map.csv (old,new,confidence,reason), redirects.htaccess,
@@ -143,6 +144,7 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             "--no-external" => cfg.check_external = false,
             "--no-resources" => cfg.check_resources = false,
             "--no-sitemaps" => cfg.crawl_sitemaps = false,
+            "--no-ai-bots" => cfg.ai_bots = false,
             "--quiet" | "-q" => quiet = true,
             "--fail-on" => fail_on = Some(compare::parse_level(&val("--fail-on")?)?),
             "--fail-on-check" => {
@@ -267,6 +269,10 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             Box::new(move || report::redirects_csv_to(file("redirects.csv")?, c).map(drop)),
         ),
         (
+            "ai_bots.csv",
+            Box::new(move || file("ai_bots.csv")?.write_all(report::ai_bots_csv(c).as_bytes())),
+        ),
+        (
             "crawl.shoutingtoad",
             Box::new(move || c.save(&project).map_err(std::io::Error::other)),
         ),
@@ -314,6 +320,9 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             format!("{}: {}", c.category, c.name),
             hits.len()
         );
+    }
+    if let Some(r) = &crawl.site.ai_bots {
+        println!("{}", crate::ai_search::summary(r));
     }
     println!("Reports written to {}", out.display());
     let failed_new = gate.run(&crawl, &audit, &out)?;

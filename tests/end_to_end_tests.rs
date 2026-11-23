@@ -1825,6 +1825,7 @@ fn fixture_site_audit() {
         ("resources.large_inline_css", "/res/inline"),
         ("resources.document_write", "/res/inline"),
         ("resources.js_rendered", "/res/spa"),
+        ("ai.js_only_content", "/res/spa"),
     ] {
         a.hit(id, path);
     }

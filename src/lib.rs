@@ -1,5 +1,6 @@
 //! ShoutingToad SEO Spider: crawler, audit engine, reports and desktop app.
 pub mod ai;
+pub mod ai_search;
 pub mod app;
 pub mod audit;
 pub mod checks;
