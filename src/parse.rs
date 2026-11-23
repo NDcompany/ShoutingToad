@@ -3,6 +3,7 @@
 use crate::model::{Form, HtmlData, Iframe, Image, Link, Script};
 use regex::Regex;
 use scraper::{ElementRef, Html};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use url::Url;
@@ -60,23 +61,101 @@ fn has_ancestor(el: &ElementRef, name: &str) -> bool {
         .any(|a| a.value().as_element().is_some_and(|e| e.name() == name))
 }
 
-/// Visible text below `el`, skipping non-rendered subtrees.
+/// Visible text below `el`, skipping non-rendered subtrees. Iterative: hostile pages nest
+/// deeply enough to overflow a worker thread's stack with recursion.
 fn visible_text(el: ElementRef, out: &mut String) {
-    for child in el.children() {
+    let mut stack = vec![el.children()];
+    while let Some(children) = stack.last_mut() {
+        let Some(child) = children.next() else {
+            stack.pop();
+            continue;
+        };
         if let Some(t) = child.value().as_text() {
             out.push_str(t);
             out.push(' ');
         } else if let Some(ch) = ElementRef::wrap(child) {
             match ch.value().name() {
                 "script" | "style" | "noscript" | "template" | "svg" | "head" | "iframe" | "object" => {}
-                _ => visible_text(ch, out),
+                _ => stack.push(ch.children()),
             }
         }
     }
 }
 
+/// Deepest element nesting handed to the HTML parser. html5ever's scope checks walk the whole
+/// open-element stack, so 100k nested tags take minutes; browsers cap tree depth too (Blink: 512).
+const MAX_DEPTH: usize = 512;
+
+/// Remove start tags that would nest deeper than [`MAX_DEPTH`], keeping their content. Uses a
+/// rough open-element stack: void and self-closing tags, and tags the parser closes implicitly
+/// (p, li, td, a…), are not tracked; an end tag pops back to its matching start tag.
+fn cap_nesting(raw: &str) -> Cow<'_, str> {
+    const UNTRACKED: &[&str] = &[
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+        "keygen", "basefont", "bgsound", "frame", "image", "html", "head", "body", "p", "li", "dt", "dd", "tr", "td",
+        "th", "tbody", "thead", "tfoot", "colgroup", "caption", "option", "optgroup", "rb", "rt", "rp", "a", "nobr",
+        "button", "form",
+    ];
+    const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "plaintext"];
+    let has = |list: &[&str], name: &str| list.iter().any(|t| t.eq_ignore_ascii_case(name));
+    let b = raw.as_bytes();
+    let find = |from: usize, needle: &[u8]| -> Option<usize> {
+        b.get(from..)?.windows(needle.len()).position(|w| w.eq_ignore_ascii_case(needle)).map(|p| from + p)
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    let mut out: Option<String> = None;
+    let mut copied = 0;
+    let mut i = 0;
+    while let Some(start) = b.get(i..).and_then(|rest| rest.iter().position(|&c| c == b'<')).map(|p| i + p) {
+        i = start + 1;
+        if b[i..].starts_with(b"!--") {
+            i = find(i, b"-->").map_or(b.len(), |p| p + 3);
+            continue;
+        }
+        let closing = b.get(i) == Some(&b'/');
+        let ns = i + closing as usize;
+        let ne = ns + b[ns.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'-').count();
+        if ne == ns || !b[ns].is_ascii_alphabetic() {
+            continue;
+        }
+        let name = &raw[ns..ne]; // ASCII, so on char boundaries
+        let Some(end) = find(ne, b">") else { break };
+        i = end + 1;
+        if closing {
+            if !has(UNTRACKED, name) {
+                if let Some(pos) = stack.iter().rposition(|n| n.eq_ignore_ascii_case(name)) {
+                    stack.truncate(pos);
+                }
+            }
+        } else if has(RAW_TEXT, name) {
+            let close = format!("</{name}");
+            i = find(i, close.as_bytes()).unwrap_or(b.len());
+        } else if b[end - 1] != b'/' && !has(UNTRACKED, name) {
+            if stack.len() < MAX_DEPTH {
+                stack.push(name);
+            } else {
+                let o = out.get_or_insert_with(|| String::with_capacity(raw.len()));
+                o.push_str(&raw[copied..start]);
+                copied = end + 1;
+            }
+        }
+    }
+    match out {
+        Some(mut o) => {
+            o.push_str(&raw[copied..]);
+            Cow::Owned(o)
+        }
+        None => Cow::Borrowed(raw),
+    }
+}
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+
 pub fn fnv64(data: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    fnv64_continue(FNV_OFFSET, data)
+}
+
+fn fnv64_continue(mut h: u64, data: &[u8]) -> u64 {
     for b in data {
         h ^= *b as u64;
         h = h.wrapping_mul(0x100000001b3);
@@ -91,7 +170,8 @@ pub fn simhash(words: &[String]) -> u64 {
     }
     let mut votes = [0i32; 64];
     for w in words.windows(3) {
-        let h = fnv64(w.join(" ").as_bytes());
+        // fnv64 of "w0 w1 w2" without building the string
+        let h = fnv64_continue(fnv64_continue(fnv64_continue(fnv64_continue(fnv64_continue(FNV_OFFSET, w[0].as_bytes()), b" "), w[1].as_bytes()), b" "), w[2].as_bytes());
         for (bit, v) in votes.iter_mut().enumerate() {
             if h >> bit & 1 == 1 {
                 *v += 1
@@ -106,22 +186,24 @@ pub fn simhash(words: &[String]) -> u64 {
         .fold(0u64, |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc })
 }
 
+/// Vowel groups over the ASCII letters of `word` (allocation-free: runs for every word).
 fn syllables(word: &str) -> usize {
-    let w: Vec<char> = word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_lowercase()).collect();
-    if w.is_empty() {
-        return 0;
-    }
-    let vowel = |c: char| "aeiouy".contains(c);
-    let mut count = 0;
-    let mut prev = false;
-    for &c in &w {
-        let v = vowel(c);
+    let (mut count, mut prev, mut len, mut last, mut before_last) = (0, false, 0, 0u8, 0u8);
+    for c in word.bytes().filter(|b| b.is_ascii_alphabetic()).map(|b| b.to_ascii_lowercase()) {
+        let v = b"aeiouy".contains(&c);
         if v && !prev {
             count += 1;
         }
         prev = v;
+        len += 1;
+        before_last = last;
+        last = c;
     }
-    if w.len() > 2 && w.ends_with(&['e']) && !w.ends_with(&['l', 'e']) && count > 1 {
+    if len == 0 {
+        return 0;
+    }
+    // silent final "e", but not "-le"
+    if len > 2 && last == b'e' && before_last != b'l' && count > 1 {
         count -= 1;
     }
     count.max(1)
@@ -163,7 +245,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     let re_font_face = RE_FONT_FACE.get_or_init(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
 
     let mut d = HtmlData::default();
-    let doc = Html::parse_document(raw);
+    let doc = Html::parse_document(&cap_nesting(raw));
 
     // ---- raw-markup structure checks
     let stripped = re_strip.replace_all(raw, "");
@@ -216,13 +298,19 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         }
     }
 
+    // Elements inside <head>, found once instead of walking every element's ancestors.
+    let mut in_head_ids = HashSet::new();
+    for head in doc.root_element().descendants().filter_map(ElementRef::wrap).filter(|e| e.value().name() == "head") {
+        in_head_ids.extend(head.descendants().skip(1).map(|n| n.id()));
+    }
+
     let mut id_counts: HashMap<String, usize> = HashMap::new();
     let mut deprecated: HashSet<String> = HashSet::new();
 
     for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
         d.dom_elements += 1;
         let name = el.value().name();
-        let in_head = has_ancestor(&el, "head");
+        let in_head = in_head_ids.contains(&el.id());
 
         if let Some(id) = el.value().attr("id") {
             *id_counts.entry(id.to_string()).or_insert(0) += 1;
@@ -669,6 +757,55 @@ mod tests {
         let d = parse("<html><head><div>x</div><title>T</title></head><body><title>Again</title></body></html>");
         assert!(d.invalid_in_head.contains(&"div".to_string()));
         assert!(d.title_outside_head);
+    }
+
+    #[test]
+    fn caps_hostile_nesting() {
+        let deep = format!("<html><body>{}<a href=\"/x\">deep</a>{}</body></html>", "<div>".repeat(100_000), "</div>".repeat(100_000));
+        assert_eq!(cap_nesting(&deep).matches("<div>").count(), MAX_DEPTH);
+        let d = parse(&deep);
+        assert_eq!(d.links.len(), 1);
+        assert_eq!(d.word_count, 1);
+        let normal = "<html><body><div><p>a<div>b</div></p><!-- <div> --><script>if (a<b) {}</script></div></body></html>";
+        assert!(matches!(cap_nesting(normal), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn simhash_and_syllables_match_reference() {
+        let words: Vec<String> = "naïve readable little table the cat sat on a mat".split(' ').map(String::from).collect();
+        let mut votes = [0i32; 64];
+        for w in words.windows(3) {
+            let h = fnv64(w.join(" ").as_bytes());
+            for (bit, v) in votes.iter_mut().enumerate() {
+                *v += if h >> bit & 1 == 1 { 1 } else { -1 };
+            }
+        }
+        let reference = votes.iter().enumerate().fold(0u64, |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc });
+        assert_eq!(simhash(&words), reference);
+        let counts: Vec<usize> = ["table", "little", "the", "make", "naïve", "rhythm", "", "42", "Queue"].iter().map(|w| syllables(w)).collect();
+        assert_eq!(counts, vec![2, 2, 1, 1, 1, 1, 0, 0, 1]);
+        // previous char-vector implementation
+        let old = |word: &str| {
+            let w: Vec<char> = word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_lowercase()).collect();
+            if w.is_empty() {
+                return 0;
+            }
+            let (mut count, mut prev) = (0, false);
+            for &c in &w {
+                let v = "aeiouy".contains(c);
+                if v && !prev {
+                    count += 1;
+                }
+                prev = v;
+            }
+            if w.len() > 2 && w.ends_with(&['e']) && !w.ends_with(&['l', 'e']) && count > 1 {
+                count -= 1;
+            }
+            count.max(1)
+        };
+        for w in "Le le ale idle Apple BEE eye ée crème brûlée x-ray re-use oe aye Yule whole café 3e e".split(' ') {
+            assert_eq!(syllables(w), old(w), "{w}");
+        }
     }
 
     #[test]
