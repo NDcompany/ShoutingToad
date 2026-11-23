@@ -29,7 +29,10 @@ pub struct Route {
 }
 
 pub const SECURE_HEADERS: [(&str, &str); 6] = [
-    ("Content-Security-Policy", "default-src 'self'; frame-ancestors 'self'"),
+    (
+        "Content-Security-Policy",
+        "default-src 'self'; frame-ancestors 'self'",
+    ),
     ("X-Content-Type-Options", "nosniff"),
     ("X-Frame-Options", "SAMEORIGIN"),
     ("Referrer-Policy", "strict-origin-when-cross-origin"),
@@ -39,7 +42,11 @@ pub const SECURE_HEADERS: [(&str, &str); 6] = [
 
 impl Route {
     pub fn new(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> Route {
-        let mut r = Route { status, body: body.into(), ..Default::default() };
+        let mut r = Route {
+            status,
+            body: body.into(),
+            ..Default::default()
+        };
         if !content_type.is_empty() {
             r.headers.push(("Content-Type".into(), content_type.into()));
         }
@@ -92,7 +99,9 @@ pub fn error(status: u16) -> Route {
 
 /// Static file with long-lived cache headers and a validator.
 pub fn file(content_type: &str, body: impl Into<Vec<u8>>) -> Route {
-    Route::new(200, content_type, body).header("Cache-Control", "public, max-age=31536000").header("ETag", "\"v1\"")
+    Route::new(200, content_type, body)
+        .header("Cache-Control", "public, max-age=31536000")
+        .header("ETag", "\"v1\"")
 }
 
 pub type Site = HashMap<String, Route>;
@@ -139,7 +148,12 @@ impl Server {
                 }
             });
         }
-        Server { port, base, ext, log }
+        Server {
+            port,
+            base,
+            ext,
+            log,
+        }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -158,7 +172,11 @@ impl Server {
 
 /// A port with nothing listening on it.
 pub fn closed_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, String)>>) {
@@ -172,7 +190,9 @@ fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, Strin
         }
         if buf.first() == Some(&0x16) {
             // TLS ClientHello on a plain-HTTP port: answer in plain text so the handshake fails fast.
-            let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = s.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
             return;
         }
         if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 65536 {
@@ -187,16 +207,25 @@ fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, Strin
     let header = |name: &str| {
         lines
             .clone()
-            .find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_string()))
+            .find_map(|l| {
+                l.split_once(':')
+                    .filter(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.trim().to_string())
+            })
             .unwrap_or_default()
     };
     let host = header("host");
     let accepts_gzip = header("accept-encoding").contains("gzip");
-    log.lock().unwrap().push((host, method.clone(), target.clone()));
+    log.lock()
+        .unwrap()
+        .push((host, method.clone(), target.clone()));
 
     let fallback = error(404);
     let path = target.split('?').next().unwrap_or("");
-    let route = routes.get(&target).or_else(|| routes.get(path)).unwrap_or(&fallback);
+    let route = routes
+        .get(&target)
+        .or_else(|| routes.get(path))
+        .unwrap_or(&fallback);
     if route.delay_ms > 0 {
         thread::sleep(Duration::from_millis(route.delay_ms));
     }
@@ -213,7 +242,10 @@ fn serve(mut s: TcpStream, routes: &Site, log: &Mutex<Vec<(String, String, Strin
     } else {
         route.body.clone()
     };
-    head.push_str(&format!("Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()));
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
     let _ = s.write_all(head.as_bytes());
     if method != "HEAD" {
         let _ = s.write_all(&body);
@@ -231,7 +263,9 @@ pub fn prose(seed: &str, words: usize) -> String {
     let mut x = shouting_toad::parse::fnv64(seed.as_bytes());
     let mut out = String::new();
     for i in 0..words {
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let w = vocab[(x >> 33) as usize % vocab.len()];
         if i % 8 == 0 {
             let mut c = w.chars();
@@ -239,7 +273,11 @@ pub fn prose(seed: &str, words: usize) -> String {
         } else {
             out.push_str(w);
         }
-        out.push_str(if i % 8 == 7 || i + 1 == words { ". " } else { " " });
+        out.push_str(if i % 8 == 7 || i + 1 == words {
+            ". "
+        } else {
+            " "
+        });
     }
     out.trim_end().to_string()
 }
@@ -315,10 +353,12 @@ impl Doc {
         self.drop("<title").head(format!("<title>{t}</title>"))
     }
     pub fn desc(self, d: &str) -> Doc {
-        self.drop("<meta name=\"description\"").head(format!(r#"<meta name="description" content="{d}">"#))
+        self.drop("<meta name=\"description\"")
+            .head(format!(r#"<meta name="description" content="{d}">"#))
     }
     pub fn canonical(self, href: &str) -> Doc {
-        self.drop("<link rel=\"canonical\"").head(format!(r#"<link rel="canonical" href="{href}">"#))
+        self.drop("<link rel=\"canonical\"")
+            .head(format!(r#"<link rel="canonical" href="{href}">"#))
     }
     pub fn robots(self, content: &str) -> Doc {
         self.head(format!(r#"<meta name="robots" content="{content}">"#))
@@ -334,11 +374,19 @@ impl Doc {
         let body = self.body.join("\n");
         format!(
             "{}<html{}><head>\n{}\n</head><body{}>{}</body></html>",
-            if self.doctype { "<!DOCTYPE html>\n" } else { "" },
+            if self.doctype {
+                "<!DOCTYPE html>\n"
+            } else {
+                ""
+            },
             self.html_attrs,
             self.head.join("\n"),
             self.body_attrs,
-            if self.main { format!("<main>{body}</main>") } else { body }
+            if self.main {
+                format!("<main>{body}</main>")
+            } else {
+                body
+            }
         )
     }
     pub fn route(&self) -> Route {
@@ -349,17 +397,28 @@ impl Doc {
 // ------------------------------------------------------------------ crawling
 
 pub fn config() -> Config {
-    Config { threads: 12, timeout_secs: 4, ..Default::default() }
+    Config {
+        threads: 12,
+        timeout_secs: 4,
+        ..Default::default()
+    }
 }
 
 /// Run a crawl to completion, collecting events the way the CLI does.
 pub fn crawl(seeds: &[String], list_mode: bool, cfg: Config) -> Crawl {
     let handle = crawler::start(seeds.to_vec(), list_mode, cfg).expect("crawl should start");
-    let mut c = Crawl { start_url: crawler::normalize_url(&seeds[0]).unwrap().to_string(), ..Default::default() };
+    let mut c = Crawl {
+        start_url: crawler::normalize_url(&seeds[0]).unwrap().to_string(),
+        ..Default::default()
+    };
     let deadline = Instant::now() + Duration::from_secs(50);
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        match handle.rx.recv_timeout(left).expect("crawl did not finish in time") {
+        match handle
+            .rx
+            .recv_timeout(left)
+            .expect("crawl did not finish in time")
+        {
             Event::Page(p) => c.pages.push(*p),
             Event::Site(s) => c.site = *s,
             Event::Finished => break,
@@ -382,7 +441,13 @@ pub struct Audited {
 impl Audited {
     pub fn new(crawl: Crawl, base: &str) -> Audited {
         let audit = audit::run(&crawl);
-        Audited { crawl, audit, base: base.into(), asserted: RefCell::default(), failures: RefCell::default() }
+        Audited {
+            crawl,
+            audit,
+            base: base.into(),
+            asserted: RefCell::default(),
+            failures: RefCell::default(),
+        }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -412,7 +477,10 @@ impl Audited {
 
     /// URLs a check fires on.
     pub fn hits(&self, id: &str) -> Vec<&str> {
-        self.audit.hits[Self::check(id)].iter().map(|&i| self.crawl.pages[i].url.as_str()).collect()
+        self.audit.hits[Self::check(id)]
+            .iter()
+            .map(|&i| self.crawl.pages[i].url.as_str())
+            .collect()
     }
 
     pub fn has(&self, id: &str, path: &str) -> bool {
@@ -425,7 +493,10 @@ impl Audited {
         let u = self.url(path);
         let cat = catalogue();
         match self.crawl.pages.iter().position(|p| p.url == u) {
-            Some(i) => self.audit.page_issues[i].iter().map(|&c| cat[c].id.as_str()).collect(),
+            Some(i) => self.audit.page_issues[i]
+                .iter()
+                .map(|&c| cat[c].id.as_str())
+                .collect(),
             None => Vec::new(),
         }
     }
@@ -440,7 +511,11 @@ impl Audited {
         } else if self.has(id, path) {
             self.asserted.borrow_mut().insert(id.to_string());
         } else {
-            self.fail(format!("{id} should fire on {} (fires on {:?})", self.url(path), self.hits(id)));
+            self.fail(format!(
+                "{id} should fire on {} (fires on {:?})",
+                self.url(path),
+                self.hits(id)
+            ));
         }
     }
 
@@ -468,11 +543,19 @@ impl Audited {
     /// Ids triggered anywhere in this crawl.
     pub fn triggered(&self) -> BTreeSet<String> {
         let cat = catalogue();
-        self.audit.triggered().map(|(i, _)| cat[i].id.clone()).collect()
+        self.audit
+            .triggered()
+            .map(|(i, _)| cat[i].id.clone())
+            .collect()
     }
 
     pub fn finish(&self) {
         let f = self.failures.borrow();
-        assert!(f.is_empty(), "{} failed assertions:\n  {}", f.len(), f.join("\n  "));
+        assert!(
+            f.is_empty(),
+            "{} failed assertions:\n  {}",
+            f.len(),
+            f.join("\n  ")
+        );
     }
 }

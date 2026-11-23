@@ -77,13 +77,20 @@ impl Config {
                 return bot.to_string();
             }
         }
-        ua.split(['/', ' ', ';', '(']).find(|s| !s.is_empty()).unwrap_or("*").to_string()
+        ua.split(['/', ' ', ';', '('])
+            .find(|s| !s.is_empty())
+            .unwrap_or("*")
+            .to_string()
     }
 }
 
 pub enum Event {
     Page(Box<Page>),
-    Progress { crawled: usize, queued: usize, active: usize },
+    Progress {
+        crawled: usize,
+        queued: usize,
+        active: usize,
+    },
     Site(Box<SiteInfo>),
     Log(String),
     Finished,
@@ -100,7 +107,11 @@ pub fn normalize_url(raw: &str) -> Result<Url, String> {
     if t.is_empty() {
         return Err("Enter a URL to crawl".into());
     }
-    let full = if t.contains("://") { t.to_string() } else { format!("https://{t}") };
+    let full = if t.contains("://") {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    };
     let mut u = Url::parse(&full).map_err(|e| format!("'{raw}' is not a valid URL: {e}"))?;
     if u.scheme() != "http" && u.scheme() != "https" {
         return Err(format!("'{raw}' must be an http or https URL"));
@@ -159,7 +170,9 @@ fn opt_regex(pattern: &str, what: &str) -> Result<Option<Regex>, String> {
     if pattern.trim().is_empty() {
         return Ok(None);
     }
-    Regex::new(pattern.trim()).map(Some).map_err(|e| format!("{what} pattern is not a valid regex: {e}"))
+    Regex::new(pattern.trim())
+        .map(Some)
+        .map_err(|e| format!("{what} pattern is not a valid regex: {e}"))
 }
 
 /// Start a crawl. `list_mode` audits exactly the given URLs without following links.
@@ -180,7 +193,10 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         .build()
         .map_err(|e| format!("Could not create HTTP client: {e}"))?;
 
-    let mut internal_hosts: Vec<String> = urls.iter().filter_map(|u| u.host_str().map(|h| h.to_string())).collect();
+    let mut internal_hosts: Vec<String> = urls
+        .iter()
+        .filter_map(|u| u.host_str().map(|h| h.to_string()))
+        .collect();
     internal_hosts.sort();
     internal_hosts.dedup();
     let root_domain = internal_hosts[0].trim_start_matches("www.").to_string();
@@ -197,7 +213,12 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         cfg,
         list_mode,
         client,
-        queue: Mutex::new(Queue { jobs: VecDeque::new(), seen: HashSet::new(), meta: 0, active: 0 }),
+        queue: Mutex::new(Queue {
+            jobs: VecDeque::new(),
+            seen: HashSet::new(),
+            meta: 0,
+            active: 0,
+        }),
         cv: Condvar::new(),
         stop: stop.clone(),
         pause: pause.clone(),
@@ -220,7 +241,11 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         let (sh, start) = (sh.clone(), seeds[0].clone());
         thread::spawn(move || site_setup(&sh, &start))
     };
-    let setup = if wait_or_stop(&sh, std::slice::from_ref(&setup)) { setup.join().ok() } else { None };
+    let setup = if wait_or_stop(&sh, std::slice::from_ref(&setup)) {
+        setup.join().ok()
+    } else {
+        None
+    };
     let Some((site, sitemap_urls)) = setup else {
         let _ = sh.tx.send(Event::Finished);
         return;
@@ -231,7 +256,11 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         let mut q = sh.queue.lock().unwrap();
         for u in &seeds {
             if q.seen.insert(u.to_string()) {
-                q.jobs.push_back(Job { url: u.to_string(), depth: 0, source: Source::Seed });
+                q.jobs.push_back(Job {
+                    url: u.to_string(),
+                    depth: 0,
+                    source: Source::Seed,
+                });
             }
         }
     }
@@ -245,7 +274,11 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
                 break;
             }
             if is_internal(&sh, u) && wanted(&sh, u) && q.seen.insert(u.clone()) {
-                q.jobs.push_back(Job { url: u.clone(), depth: 1, source: Source::Sitemap });
+                q.jobs.push_back(Job {
+                    url: u.clone(),
+                    depth: 1,
+                    source: Source::Sitemap,
+                });
             }
         }
         drop(q);
@@ -265,7 +298,12 @@ fn path_and_query(url: &Url) -> String {
 /// bare -> www or the reverse), that host is internal too and site-wide checks
 /// (robots.txt, sitemaps, host variants) run against it.
 fn resolve_start(sh: &Shared, start: &Url) -> Option<Url> {
-    let bare = |u: &Url| u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
+    let bare = |u: &Url| {
+        u.host_str()
+            .unwrap_or("")
+            .trim_start_matches("www.")
+            .to_string()
+    };
     let mut cur = start.clone();
     for _ in 0..5 {
         let r = fetch(sh, cur.as_str(), false, 64 * 1024).ok()?;
@@ -295,7 +333,8 @@ fn site_setup(sh: &Shared, start: &Url) -> (SiteInfo, Vec<String>) {
     // Follow a start-URL redirect to its www/non-www twin, but only if robots.txt lets us fetch it.
     let mut start = start.clone();
     let start_allowed = !sh.cfg.respect_robots
-        || robots_for(sh, &start).is_none_or(|r| r.is_allowed(&path_and_query(&start), &sh.cfg.robots_agent()));
+        || robots_for(sh, &start)
+            .is_none_or(|r| r.is_allowed(&path_and_query(&start), &sh.cfg.robots_agent()));
     if !sh.list_mode && start_allowed {
         if let Some(fin) = resolve_start(sh, &start) {
             start = fin;
@@ -365,12 +404,20 @@ fn worker(sh: Arc<Shared>) {
 
         // A panic on hostile input must not kill the worker: it would leave `active` raised and
         // the crawl waiting forever.
-        let (page, discovered) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(&sh, &job))).unwrap_or_else(|_| {
-            let mut page = base_page(&sh, &job.url, job.depth, job.source, is_internal(&sh, &job.url));
-            page.error = Some("Internal error while processing this URL".into());
-            page.status_text = "Internal error while processing this URL".into();
-            (page, Vec::new())
-        });
+        let (page, discovered) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(&sh, &job)))
+                .unwrap_or_else(|_| {
+                    let mut page = base_page(
+                        &sh,
+                        &job.url,
+                        job.depth,
+                        job.source,
+                        is_internal(&sh, &job.url),
+                    );
+                    page.error = Some("Internal error while processing this URL".into());
+                    page.status_text = "Internal error while processing this URL".into();
+                    (page, Vec::new())
+                });
         let crawled = sh.crawled.fetch_add(1, Ordering::Relaxed) + 1;
         let (queued, active) = {
             let mut q = sh.queue.lock().unwrap();
@@ -387,18 +434,32 @@ fn worker(sh: Arc<Shared>) {
         };
         sh.cv.notify_all();
         let _ = sh.tx.send(Event::Page(Box::new(page)));
-        let _ = sh.tx.send(Event::Progress { crawled, queued, active });
+        let _ = sh.tx.send(Event::Progress {
+            crawled,
+            queued,
+            active,
+        });
     }
 }
 
 fn is_internal(sh: &Shared, url: &str) -> bool {
-    let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string())) else {
+    let Some(host) = Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+    else {
         return false;
     };
-    if sh.internal_hosts.read().unwrap().iter().any(|h| same_site(h, &host)) {
+    if sh
+        .internal_hosts
+        .read()
+        .unwrap()
+        .iter()
+        .any(|h| same_site(h, &host))
+    {
         return true;
     }
-    sh.cfg.crawl_subdomains && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))
+    sh.cfg.crawl_subdomains
+        && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))
 }
 
 /// www and non-www are one site, as the checks treat them, so a start URL that
@@ -409,7 +470,8 @@ fn same_site(a: &str, b: &str) -> bool {
 
 /// Internal URL passes the include and exclude patterns.
 fn wanted(sh: &Shared, u: &str) -> bool {
-    sh.include.as_ref().is_none_or(|re| re.is_match(u)) && sh.exclude.as_ref().is_none_or(|re| !re.is_match(u))
+    sh.include.as_ref().is_none_or(|re| re.is_match(u))
+        && sh.exclude.as_ref().is_none_or(|re| !re.is_match(u))
 }
 
 fn throttle(sh: &Shared) {
@@ -443,24 +505,43 @@ fn fetch(sh: &Shared, url: &str, head: bool, limit: usize) -> Result<Response, S
     fetch_as(sh, url, head, limit, ACCEPT_HTML)
 }
 
-fn fetch_as(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) -> Result<Response, String> {
+fn fetch_as(
+    sh: &Shared,
+    url: &str,
+    head: bool,
+    limit: usize,
+    accept: &str,
+) -> Result<Response, String> {
     // 429 means this crawl is being rate limited: back off (honouring Retry-After) and retry.
     for _ in 0..2 {
         let r = fetch_once(sh, url, head, limit, accept)?;
         if r.status != 429 || sh.stop.load(Ordering::Relaxed) {
             return Ok(r);
         }
-        let secs = header(&r.headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(5).clamp(1, 30);
+        let secs = header(&r.headers, "retry-after")
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5)
+            .clamp(1, 30);
         let mut next = sh.next_slot.lock().unwrap();
         *next = (*next).max(Instant::now() + Duration::from_secs(secs));
     }
     fetch_once(sh, url, head, limit, accept)
 }
 
-fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) -> Result<Response, String> {
+fn fetch_once(
+    sh: &Shared,
+    url: &str,
+    head: bool,
+    limit: usize,
+    accept: &str,
+) -> Result<Response, String> {
     throttle(sh);
     let t0 = Instant::now();
-    let req = if head { sh.client.head(url) } else { sh.client.get(url) };
+    let req = if head {
+        sh.client.head(url)
+    } else {
+        sh.client.get(url)
+    };
     let resp = req
         .header("Accept", accept)
         .header("Accept-Encoding", "gzip, deflate, br")
@@ -470,7 +551,12 @@ fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) ->
     let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
-        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+        .map(|(k, v)| {
+            (
+                k.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
         .collect();
     let version = format!("{:?}", resp.version());
     let encoding = resp
@@ -492,7 +578,10 @@ fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) ->
                 return Err("Stopped".into());
             }
             if Instant::now() > deadline {
-                return Err(format!("Timeout: the body took longer than {}s to download", sh.cfg.timeout_secs.max(1)));
+                return Err(format!(
+                    "Timeout: the body took longer than {}s to download",
+                    sh.cfg.timeout_secs.max(1)
+                ));
             }
             match body.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -518,12 +607,22 @@ fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) ->
 fn decompress(encoding: &str, raw: Vec<u8>, limit: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let ok = match encoding {
-        "gzip" | "x-gzip" => flate2::read::GzDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok(),
+        "gzip" | "x-gzip" => flate2::read::GzDecoder::new(&raw[..])
+            .take(limit as u64)
+            .read_to_end(&mut out)
+            .is_ok(),
         "deflate" => {
-            flate2::read::ZlibDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok() || {
-                out.clear();
-                flate2::read::DeflateDecoder::new(&raw[..]).take(limit as u64).read_to_end(&mut out).is_ok()
-            }
+            flate2::read::ZlibDecoder::new(&raw[..])
+                .take(limit as u64)
+                .read_to_end(&mut out)
+                .is_ok()
+                || {
+                    out.clear();
+                    flate2::read::DeflateDecoder::new(&raw[..])
+                        .take(limit as u64)
+                        .read_to_end(&mut out)
+                        .is_ok()
+                }
         }
         "br" => brotli_decompressor::Decompressor::new(&raw[..], 4096)
             .take(limit as u64)
@@ -593,7 +692,8 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
     for _ in 0..5 {
         match fetch(sh, &current, false, 1024 * 1024) {
             Ok(r) if (300..400).contains(&r.status) => {
-                let loc = header(&r.headers, "location").and_then(|l| Url::parse(&current).ok()?.join(&l).ok());
+                let loc = header(&r.headers, "location")
+                    .and_then(|l| Url::parse(&current).ok()?.join(&l).ok());
                 match loc {
                     Some(l) => {
                         redirected = true;
@@ -615,7 +715,10 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
             }
         }
     }
-    let rules = result.as_ref().filter(|r| r.status == 200).map(|r| Arc::new(Robots::parse(&String::from_utf8_lossy(&r.body))));
+    let rules = result
+        .as_ref()
+        .filter(|r| r.status == 200)
+        .map(|r| Arc::new(Robots::parse(&String::from_utf8_lossy(&r.body))));
     if primary {
         let agent = sh.cfg.robots_agent();
         site.robots = Some(RobotsInfo {
@@ -625,7 +728,10 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
             redirected,
             disallow_all: rules.as_ref().is_some_and(|r| r.disallows_all(&agent)),
             crawl_delay: rules.as_ref().and_then(|r| r.crawl_delay(&agent)),
-            sitemap_directives: rules.as_ref().map(|r| r.sitemaps.clone()).unwrap_or_default(),
+            sitemap_directives: rules
+                .as_ref()
+                .map(|r| r.sitemaps.clone())
+                .unwrap_or_default(),
             invalid_lines: rules.as_ref().map(|r| r.invalid_lines).unwrap_or(0),
             noindex_lines: rules.as_ref().map(|r| r.noindex_lines).unwrap_or(0),
         });
@@ -643,7 +749,10 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
 }
 
 fn header(headers: &[(String, String)], name: &str) -> Option<String> {
-    headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone())
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
 }
 
 fn valid_lastmod(s: &str) -> bool {
@@ -656,7 +765,12 @@ fn valid_lastmod(s: &str) -> bool {
         || chrono::DateTime::parse_from_str(&s.replace('Z', "+00:00"), "%Y-%m-%dT%H:%M%:z").is_ok()
 }
 
-fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut SiteInfo) -> Vec<String> {
+fn fetch_sitemaps(
+    sh: &Shared,
+    start: &Url,
+    robots: Option<&Robots>,
+    site: &mut SiteInfo,
+) -> Vec<String> {
     let base = start.origin().ascii_serialization();
     let declared: Vec<String> = robots.map(|r| r.sitemaps.clone()).unwrap_or_default();
     let mut todo: VecDeque<(String, bool)> = declared.iter().map(|s| (s.clone(), true)).collect();
@@ -701,7 +815,9 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
         let _ = sh.tx.send(Event::Page(Box::new(page)));
         // Search engines follow sitemap redirects (mozilla.org: /sitemap.xml -> /en-US/sitemap.xml).
         if (300..400).contains(&resp.status) {
-            if let Some(next) = header(&resp.headers, "location").and_then(|l| Url::parse(&sm_url).ok()?.join(l.trim()).ok()) {
+            if let Some(next) = header(&resp.headers, "location")
+                .and_then(|l| Url::parse(&sm_url).ok()?.join(l.trim()).ok())
+            {
                 if guessed.contains(&sm_url) {
                     guessed.insert(next.to_string());
                 }
@@ -709,12 +825,21 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
                 continue;
             }
         }
-        let mut info = SitemapInfo { url: sm_url.clone(), status: resp.status, in_robots, size: resp.body.len(), ..Default::default() };
+        let mut info = SitemapInfo {
+            url: sm_url.clone(),
+            status: resp.status,
+            in_robots,
+            size: resp.body.len(),
+            ..Default::default()
+        };
         if resp.status == 200 {
             let mut body = resp.body.clone();
             if body.starts_with(&[0x1f, 0x8b]) {
                 let mut out = Vec::new();
-                if flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut out).is_ok() {
+                if flate2::read::GzDecoder::new(&body[..])
+                    .read_to_end(&mut out)
+                    .is_ok()
+                {
                     body = out;
                 }
             }
@@ -724,7 +849,10 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
                 info.valid_xml = true;
                 let root = doc.root_element();
                 let child_text = |n: roxmltree::Node, name: &str| {
-                    n.children().find(|c| c.tag_name().name() == name).and_then(|c| c.text()).map(|t| t.trim().to_string())
+                    n.children()
+                        .find(|c| c.tag_name().name() == name)
+                        .and_then(|c| c.text())
+                        .map(|t| t.trim().to_string())
                 };
                 match root.tag_name().name() {
                     // Google also accepts RSS 2.0 and Atom feeds as sitemaps.
@@ -750,7 +878,9 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
                     name => {
                         info.is_index = name == "sitemapindex";
                         for entry in root.children().filter(|n| n.is_element()) {
-                            let Some(loc) = child_text(entry, "loc") else { continue };
+                            let Some(loc) = child_text(entry, "loc") else {
+                                continue;
+                            };
                             if let Some(lm) = child_text(entry, "lastmod") {
                                 if !valid_lastmod(&lm) {
                                     info.invalid_lastmod += 1;
@@ -763,7 +893,11 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
             } else if !text.trim_start().starts_with('<') {
                 // Plain-text sitemap: one URL per line.
                 info.valid_xml = true;
-                locs = text.lines().map(|l| l.trim().to_string()).filter(|l| l.starts_with("http")).collect();
+                locs = text
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| l.starts_with("http"))
+                    .collect();
             }
             for loc in locs {
                 info.url_count += 1;
@@ -806,7 +940,8 @@ fn check_host_variants(sh: &Shared, start: &Url, site: &mut SiteInfo) {
     let alt_url = format!("{}://{alt}/", start.scheme());
     if let Ok(r) = fetch(sh, &alt_url, false, 64 * 1024) {
         site.alt_host_redirects = Some(
-            (300..400).contains(&r.status) && header(&r.headers, "location").is_some_and(|l| l.contains(&host)),
+            (300..400).contains(&r.status)
+                && header(&r.headers, "location").is_some_and(|l| l.contains(&host)),
         );
     }
 }
@@ -833,12 +968,16 @@ fn fill_response(page: &mut Page, r: &Response, url: &Url) {
     page.content_encoding = r.encoding.clone();
     page.content_type = header(&r.headers, "content-type").unwrap_or_default();
     if (300..400).contains(&r.status) {
-        page.redirect_to = header(&r.headers, "location").and_then(|l| url.join(l.trim()).ok()).map(|mut u| {
-            u.set_fragment(None);
-            u.to_string()
-        });
+        page.redirect_to = header(&r.headers, "location")
+            .and_then(|l| url.join(l.trim()).ok())
+            .map(|mut u| {
+                u.set_fragment(None);
+                u.to_string()
+            });
     }
-    if let Some(len) = header(&r.headers, "content-length").and_then(|v| v.trim().parse::<usize>().ok()) {
+    if let Some(len) =
+        header(&r.headers, "content-length").and_then(|v| v.trim().parse::<usize>().ok())
+    {
         if page.size == 0 {
             page.size = len;
             page.transfer_size = len;
@@ -846,7 +985,14 @@ fn fill_response(page: &mut Page, r: &Response, url: &Url) {
     }
 }
 
-fn resource_page(sh: &Shared, url: &str, depth: usize, source: Source, internal: bool, r: &Response) -> Page {
+fn resource_page(
+    sh: &Shared,
+    url: &str,
+    depth: usize,
+    source: Source,
+    internal: bool,
+    r: &Response,
+) -> Page {
     let mut p = base_page(sh, url, depth, source, internal);
     if let Ok(u) = Url::parse(url) {
         fill_response(&mut p, r, &u);
@@ -873,14 +1019,21 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
         }
     }
 
-    let is_resource = matches!(job.source, Source::Image | Source::Script | Source::Stylesheet);
+    let is_resource = matches!(
+        job.source,
+        Source::Image | Source::Script | Source::Stylesheet
+    );
     let full_fetch = internal && !is_resource;
     let result = if full_fetch {
         fetch(sh, &job.url, false, HTML_LIMIT)
     } else {
         // Status-only check. Some servers reject HEAD, so fall back to GET.
         // Some servers answer HEAD wrongly (404/405/403), so confirm any error with GET.
-        let limit = if is_resource { RESOURCE_LIMIT } else { 256 * 1024 };
+        let limit = if is_resource {
+            RESOURCE_LIMIT
+        } else {
+            256 * 1024
+        };
         let accept = match job.source {
             Source::Image => ACCEPT_IMAGE,
             Source::Stylesheet => "text/css,*/*;q=0.1",
@@ -888,7 +1041,12 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
             _ => ACCEPT_HTML,
         };
         match fetch_as(sh, &job.url, true, 0, accept) {
-            Ok(r) if r.status >= 400 || (r.status == 200 && is_resource && header(&r.headers, "content-length").is_none()) => {
+            Ok(r)
+                if r.status >= 400
+                    || (r.status == 200
+                        && is_resource
+                        && header(&r.headers, "content-length").is_none()) =>
+            {
                 fetch_as(sh, &job.url, false, limit, accept)
             }
             Err(_) => fetch_as(sh, &job.url, false, limit, accept),
@@ -909,7 +1067,11 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
     if let Some(loc) = &page.redirect_to {
         let target_internal = is_internal(sh, loc);
         if target_internal || sh.cfg.check_external {
-            found.push(Job { url: loc.clone(), depth: job.depth, source: Source::Redirect });
+            found.push(Job {
+                url: loc.clone(),
+                depth: job.depth,
+                source: Source::Redirect,
+            });
         }
     }
 
@@ -939,17 +1101,27 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
             page.is_nofollow_page()
         };
         let d = page.html.as_ref().unwrap();
-        let follow_links = !sh.list_mode && next_depth <= sh.cfg.max_depth && (!page_nofollow || sh.cfg.follow_nofollow);
+        let follow_links = !sh.list_mode
+            && next_depth <= sh.cfg.max_depth
+            && (!page_nofollow || sh.cfg.follow_nofollow);
         for l in &d.links {
             if l.nofollow && !sh.cfg.follow_nofollow {
                 continue;
             }
             if is_internal(sh, &l.url) {
                 if follow_links && wanted(sh, &l.url) {
-                    found.push(Job { url: l.url.clone(), depth: next_depth, source: Source::Link });
+                    found.push(Job {
+                        url: l.url.clone(),
+                        depth: next_depth,
+                        source: Source::Link,
+                    });
                 }
             } else if sh.cfg.check_external {
-                found.push(Job { url: l.url.clone(), depth: next_depth, source: Source::Link });
+                found.push(Job {
+                    url: l.url.clone(),
+                    depth: next_depth,
+                    source: Source::Link,
+                });
             }
         }
         if sh.cfg.check_resources {
@@ -961,7 +1133,11 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
                 .chain(d.stylesheets.iter().map(|s| (s, Source::Stylesheet)));
             for (u, src) in res {
                 if is_internal(sh, u) || sh.cfg.check_external {
-                    found.push(Job { url: u.clone(), depth: next_depth, source: src });
+                    found.push(Job {
+                        url: u.clone(),
+                        depth: next_depth,
+                        source: src,
+                    });
                 }
             }
         }
@@ -971,11 +1147,20 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
                 .iter()
                 .map(|u| (u, Source::Canonical))
                 .chain(d.hreflang.iter().map(|(_, u)| (u, Source::Hreflang)))
-                .chain(d.rel_next.iter().chain(d.rel_prev.iter()).map(|u| (u, Source::Pagination)))
+                .chain(
+                    d.rel_next
+                        .iter()
+                        .chain(d.rel_prev.iter())
+                        .map(|u| (u, Source::Pagination)),
+                )
                 .chain(d.amphtml.iter().map(|u| (u, Source::Amp)));
             for (u, src) in related {
                 if is_internal(sh, u) && next_depth <= sh.cfg.max_depth && wanted(sh, u) {
-                    found.push(Job { url: u.clone(), depth: next_depth, source: src });
+                    found.push(Job {
+                        url: u.clone(),
+                        depth: next_depth,
+                        source: src,
+                    });
                 }
             }
         }
@@ -999,7 +1184,14 @@ mod tests {
 
     #[test]
     fn lastmod_formats() {
-        for ok in ["2026", "2026-11", "2026-11-01", "2026-11-01T10:00Z", "2026-11-01T10:00+05:30", "2026-11-01T10:00:00Z"] {
+        for ok in [
+            "2026",
+            "2026-11",
+            "2026-11-01",
+            "2026-11-01T10:00Z",
+            "2026-11-01T10:00+05:30",
+            "2026-11-01T10:00:00Z",
+        ] {
             assert!(valid_lastmod(ok), "{ok}");
         }
         assert!(!valid_lastmod("23/11/2026"));
@@ -1018,11 +1210,13 @@ mod tests {
                     let mut line = String::new();
                     let _ = BufReader::new(&s).read_line(&mut line);
                     if line.contains("/robots.txt") {
-                        let _ = s.write_all(b"HTTP/1.1 404 Not Found
+                        let _ = s.write_all(
+                            b"HTTP/1.1 404 Not Found
 Content-Length: 0
 Connection: close
 
-");
+",
+                        );
                     } else {
                         thread::sleep(Duration::from_secs(60));
                     }
@@ -1034,8 +1228,14 @@ Connection: close
 
     fn time_to_finish_after_stop(list_mode: bool) -> Duration {
         let port = hanging_server();
-        let seeds: Vec<String> = (0..8).map(|i| format!("http://127.0.0.1:{port}/p/{i}")).collect();
-        let cfg = Config { threads: 4, timeout_secs: 30, ..Default::default() };
+        let seeds: Vec<String> = (0..8)
+            .map(|i| format!("http://127.0.0.1:{port}/p/{i}"))
+            .collect();
+        let cfg = Config {
+            threads: 4,
+            timeout_secs: 30,
+            ..Default::default()
+        };
         let h = start(seeds, list_mode, cfg).unwrap();
         thread::sleep(Duration::from_millis(500));
         let t = Instant::now();
@@ -1054,7 +1254,10 @@ Connection: close
         // crawl mode hangs in the sitemap fetch, list mode in the page workers
         for list_mode in [false, true] {
             let took = time_to_finish_after_stop(list_mode);
-            assert!(took < Duration::from_secs(2), "list_mode={list_mode}: stop took {took:?}");
+            assert!(
+                took < Duration::from_secs(2),
+                "list_mode={list_mode}: stop took {took:?}"
+            );
         }
     }
 }

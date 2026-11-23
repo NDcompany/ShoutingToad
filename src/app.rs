@@ -211,7 +211,11 @@ fn drop_in_background<T: Send + 'static>(old: T) {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext, screenshot: Option<String>, open: Option<std::path::PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext,
+        screenshot: Option<String>,
+        open: Option<std::path::PathBuf>,
+    ) -> Self {
         let mut app = Self::blank(cc, screenshot);
         if let Some(path) = open {
             app.load_project(&path);
@@ -220,7 +224,10 @@ impl App {
     }
 
     fn blank(cc: &eframe::CreationContext, screenshot: Option<String>) -> Self {
-        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        let mut settings: Settings = cc
+            .storage
+            .and_then(|s| eframe::get_value(s, "settings"))
+            .unwrap_or_default();
         settings.ai.load_env_key();
         if settings.cfg.user_agent.trim().is_empty() {
             settings.cfg.user_agent = DEFAULT_UA.into();
@@ -230,11 +237,17 @@ impl App {
             s.spacing.item_spacing = egui::vec2(8.0, 5.0);
             s.spacing.button_padding = egui::vec2(8.0, 3.0);
         });
-        let icon = image::load_from_memory(include_bytes!("../assets/icon_256.png")).ok().map(|img| {
-            let rgba = img.to_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            cc.egui_ctx.load_texture("toad", egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()), Default::default())
-        });
+        let icon = image::load_from_memory(include_bytes!("../assets/icon_256.png"))
+            .ok()
+            .map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                cc.egui_ctx.load_texture(
+                    "toad",
+                    egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                    Default::default(),
+                )
+            });
         App {
             url_input: settings.last_url.clone(),
             settings,
@@ -309,7 +322,9 @@ impl App {
                 drop_in_background(std::mem::replace(
                     &mut self.crawl,
                     Crawl {
-                        start_url: crawler::normalize_url(&seeds[0]).map(|u| u.to_string()).unwrap_or_default(),
+                        start_url: crawler::normalize_url(&seeds[0])
+                            .map(|u| u.to_string())
+                            .unwrap_or_default(),
                         started: chrono::Local::now().to_rfc3339(),
                         ..Default::default()
                     },
@@ -350,7 +365,11 @@ impl App {
         if let Some(h) = &self.handle {
             let paused = !h.pause.load(Ordering::Relaxed);
             h.pause.store(paused, Ordering::Relaxed);
-            self.state = if paused { State::Paused } else { State::Crawling };
+            self.state = if paused {
+                State::Paused
+            } else {
+                State::Crawling
+            };
         }
     }
 
@@ -387,7 +406,9 @@ impl App {
                         self.audit_dirty = true;
                     }
                     Ok(Event::Site(s)) => self.crawl.site = *s,
-                    Ok(Event::Progress { crawled, queued, .. }) => {
+                    Ok(Event::Progress {
+                        crawled, queued, ..
+                    }) => {
                         self.crawled = crawled;
                         self.queued = queued;
                     }
@@ -413,12 +434,21 @@ impl App {
             }
             self.run_audit();
             let n = self.crawl.pages.len();
-            self.toast(format!("Crawl finished: {n} URLs audited against {} checks", catalogue().len()));
-        } else if self.audit_dirty && self.last_audit.elapsed() > Duration::from_secs(3) && self.crawl.pages.len() <= 8000 {
+            self.toast(format!(
+                "Crawl finished: {n} URLs audited against {} checks",
+                catalogue().len()
+            ));
+        } else if self.audit_dirty
+            && self.last_audit.elapsed() > Duration::from_secs(3)
+            && self.crawl.pages.len() <= 8000
+        {
             // ponytail: live audit only up to 8k URLs; bigger crawls audit once at the end to keep the UI smooth.
             self.run_audit();
         }
-        if self.rows_dirty && (self.state != State::Crawling || self.last_rows.elapsed() > Duration::from_millis(600)) {
+        if self.rows_dirty
+            && (self.state != State::Crawling
+                || self.last_rows.elapsed() > Duration::from_millis(600))
+        {
             self.rebuild_rows();
         }
     }
@@ -430,7 +460,11 @@ impl App {
             Some(c) => self.audit.hits.get(c).cloned().unwrap_or_default(),
             None => (0..pages.len()).collect(),
         };
-        let quick = if self.selected_check.is_some() { Quick::All } else { self.quick };
+        let quick = if self.selected_check.is_some() {
+            Quick::All
+        } else {
+            self.quick
+        };
         let mut rows: Vec<usize> = base
             .into_iter()
             .filter(|&i| {
@@ -445,9 +479,13 @@ impl App {
                     Quick::Js => p.kind() == "JavaScript",
                     Quick::Non200 => p.status != 200,
                     Quick::Indexable => audit::indexable(p),
-                    Quick::NonIndexable => p.is_internal && p.kind() == "HTML" && !audit::indexable(p),
+                    Quick::NonIndexable => {
+                        p.is_internal && p.kind() == "HTML" && !audit::indexable(p)
+                    }
                 };
-                ok && (q.is_empty() || p.url.to_lowercase().contains(&q) || p.title().to_lowercase().contains(&q))
+                ok && (q.is_empty()
+                    || p.url.to_lowercase().contains(&q)
+                    || p.title().to_lowercase().contains(&q))
             })
             .collect();
         let (col, asc) = self.sort;
@@ -456,10 +494,16 @@ impl App {
         // Keys that cost more than a field read are computed once per row (this runs every
         // 600 ms during a crawl). Stable sorts with a reversed key keep the same tie order.
         match (col, asc) {
-            (Col::Indexability, true) => rows.sort_by_cached_key(|&i| indexability_label(&pages[i])),
-            (Col::Indexability, false) => rows.sort_by_cached_key(|&i| std::cmp::Reverse(indexability_label(&pages[i]))),
+            (Col::Indexability, true) => {
+                rows.sort_by_cached_key(|&i| indexability_label(&pages[i]))
+            }
+            (Col::Indexability, false) => {
+                rows.sort_by_cached_key(|&i| std::cmp::Reverse(indexability_label(&pages[i])))
+            }
             (Col::TitleLen, true) => rows.sort_by_cached_key(|&i| pages[i].title().chars().count()),
-            (Col::TitleLen, false) => rows.sort_by_cached_key(|&i| std::cmp::Reverse(pages[i].title().chars().count())),
+            (Col::TitleLen, false) => {
+                rows.sort_by_cached_key(|&i| std::cmp::Reverse(pages[i].title().chars().count()))
+            }
             _ => {}
         }
         rows.sort_by(|&a, &b| {
@@ -495,7 +539,13 @@ impl App {
     }
 
     fn save_file(&mut self, name: &str, ext: &str, data: impl FnOnce(&App) -> String) {
-        let Some(path) = rfd::FileDialog::new().set_file_name(name).add_filter(ext.to_uppercase(), &[ext]).save_file() else { return };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(name)
+            .add_filter(ext.to_uppercase(), &[ext])
+            .save_file()
+        else {
+            return;
+        };
         let contents = data(self);
         match std::fs::write(&path, contents) {
             Ok(_) => self.toast(format!("Saved {}", path.display())),
@@ -504,7 +554,12 @@ impl App {
     }
 
     fn open_project(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("ShoutingToad crawl", &["shoutingtoad", "json"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("ShoutingToad crawl", &["shoutingtoad", "json"])
+            .pick_file()
+        else {
+            return;
+        };
         self.load_project(&path);
     }
 
@@ -514,10 +569,22 @@ impl App {
                 self.clear();
                 self.url_input = c.start_url.clone();
                 self.crawl = c;
-                self.url_index = self.crawl.pages.iter().enumerate().map(|(i, p)| (p.url.clone(), i)).collect();
+                self.url_index = self
+                    .crawl
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (p.url.clone(), i))
+                    .collect();
                 self.state = State::Done;
                 self.run_audit();
-                self.toast(format!("Opened {} ({} URLs)", path.display(), self.crawl.pages.len()));
+                if self.screenshot.is_none() {
+                    self.toast(format!(
+                        "Opened {} ({} URLs)",
+                        path.display(),
+                        self.crawl.pages.len()
+                    ));
+                }
             }
             Err(e) => self.error(e),
         }
@@ -525,7 +592,13 @@ impl App {
 
     fn save_project(&mut self) {
         let name = format!("{}.shoutingtoad", host_slug(&self.crawl.start_url));
-        let Some(path) = rfd::FileDialog::new().set_file_name(name).add_filter("ShoutingToad crawl", &["shoutingtoad"]).save_file() else { return };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(name)
+            .add_filter("ShoutingToad crawl", &["shoutingtoad"])
+            .save_file()
+        else {
+            return;
+        };
         match self.crawl.save(&path) {
             Ok(_) => self.toast(format!("Saved crawl to {}", path.display())),
             Err(e) => self.error(e),
@@ -533,12 +606,28 @@ impl App {
     }
 
     fn export_all(&mut self) {
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else { return };
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
         let files: Vec<(&str, String)> = vec![
-            ("report.html", report::html_report(&self.crawl, &self.audit, &self.settings.client_name, &self.settings.prepared_by)),
+            (
+                "report.html",
+                report::html_report(
+                    &self.crawl,
+                    &self.audit,
+                    &self.settings.client_name,
+                    &self.settings.prepared_by,
+                ),
+            ),
             ("issues.csv", report::issues_csv(&self.crawl, &self.audit)),
-            ("issue_urls.csv", report::issue_urls_csv(&self.crawl, &self.audit)),
-            ("internal.csv", report::internal_csv(&self.crawl, &self.audit)),
+            (
+                "issue_urls.csv",
+                report::issue_urls_csv(&self.crawl, &self.audit),
+            ),
+            (
+                "internal.csv",
+                report::internal_csv(&self.crawl, &self.audit),
+            ),
             ("inlinks.csv", report::inlinks_csv(&self.crawl, &self.audit)),
             ("outlinks.csv", report::outlinks_csv(&self.crawl)),
             ("images.csv", report::images_csv(&self.crawl)),
@@ -559,7 +648,10 @@ impl App {
             self.toast("No indexable pages need new titles or descriptions");
             return;
         }
-        let pages: Vec<(Page, String)> = cands.into_iter().map(|(i, r)| (self.crawl.pages[i].clone(), r)).collect();
+        let pages: Vec<(Page, String)> = cands
+            .into_iter()
+            .map(|(i, r)| (self.crawl.pages[i].clone(), r))
+            .collect();
         let brand = ai::site_name(&self.crawl);
         let cfg = self.settings.ai.clone();
         let (tx, rx) = channel();
@@ -608,7 +700,11 @@ impl App {
 
     fn icon(&self, ui: &mut egui::Ui, size: f32) {
         if let Some(t) = &self.icon {
-            ui.add(egui::Image::new(t).fit_to_exact_size(egui::vec2(size, size)).rounding(4.0));
+            ui.add(
+                egui::Image::new(t)
+                    .fit_to_exact_size(egui::vec2(size, size))
+                    .rounding(4.0),
+            );
         }
     }
 }
@@ -677,7 +773,10 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
         self.pump_ai();
-        if matches!(self.state, State::Crawling | State::Paused) || self.ai_rx.is_some() || self.ai_test_rx.is_some() {
+        if matches!(self.state, State::Crawling | State::Paused)
+            || self.ai_rx.is_some()
+            || self.ai_test_rx.is_some()
+        {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         self.screenshot_tick(ctx);
@@ -696,10 +795,19 @@ impl eframe::App for App {
                 self.welcome(ui);
             } else {
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(self.view == View::Overview, RichText::new("Overview").strong()).clicked() {
+                    if ui
+                        .selectable_label(
+                            self.view == View::Overview,
+                            RichText::new("Overview").strong(),
+                        )
+                        .clicked()
+                    {
                         self.view = View::Overview;
                     }
-                    if ui.selectable_label(self.view == View::Urls, RichText::new("URLs").strong()).clicked() {
+                    if ui
+                        .selectable_label(self.view == View::Urls, RichText::new("URLs").strong())
+                        .clicked()
+                    {
                         self.view = View::Urls;
                     }
                 });
@@ -716,11 +824,16 @@ impl eframe::App for App {
 
 impl App {
     fn screenshot_tick(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.screenshot.clone() else { return };
+        let Some(target) = self.screenshot.clone() else {
+            return;
+        };
         ctx.request_repaint();
         self.frames += 1;
         // Docs helper: SHOUTINGTOAD_SCREENSHOT_VIEW=urls shows the URL table with the first page inspected.
-        if self.frames == 1 && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("urls") && self.has_data() {
+        if self.frames == 1
+            && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("urls")
+            && self.has_data()
+        {
             self.view = View::Urls;
             self.selected = self.crawl.pages.iter().position(audit::ih);
             self.insp = Insp::Serp;
@@ -730,10 +843,26 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         let shots: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
-            i.raw.events.iter().filter_map(|e| if let egui::Event::Screenshot { image, .. } = e { Some(image.clone()) } else { None }).collect()
+            i.raw
+                .events
+                .iter()
+                .filter_map(|e| {
+                    if let egui::Event::Screenshot { image, .. } = e {
+                        Some(image.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         });
         if let Some(img) = shots.first() {
-            let _ = image::save_buffer(&target, img.as_raw(), img.width() as u32, img.height() as u32, image::ExtendedColorType::Rgba8);
+            let _ = image::save_buffer(
+                &target,
+                img.as_raw(),
+                img.width() as u32,
+                img.height() as u32,
+                image::ExtendedColorType::Rgba8,
+            );
             std::process::exit(0);
         }
     }
@@ -750,7 +879,10 @@ impl App {
                         ui.close_menu();
                         self.open_project();
                     }
-                    if ui.add_enabled(self.has_data(), egui::Button::new("Save crawl…")).clicked() {
+                    if ui
+                        .add_enabled(self.has_data(), egui::Button::new("Save crawl…"))
+                        .clicked()
+                    {
                         ui.close_menu();
                         self.save_project();
                     }
@@ -779,7 +911,11 @@ impl App {
                     }
                     ui.separator();
                     ui.label(RichText::new("Theme").small().weak());
-                    for (t, name) in [(ThemeChoice::System, "Follow system"), (ThemeChoice::Dark, "Dark"), (ThemeChoice::Light, "Light")] {
+                    for (t, name) in [
+                        (ThemeChoice::System, "Follow system"),
+                        (ThemeChoice::Dark, "Dark"),
+                        (ThemeChoice::Light, "Light"),
+                    ] {
                         if ui.radio(self.settings.theme == t, name).clicked() {
                             self.settings.theme = t;
                             apply_theme(ctx, t);
@@ -792,16 +928,34 @@ impl App {
                     ui.add_enabled_ui(has, |ui| {
                         type Exporter = fn(&App) -> String;
                         let items: [(&str, &str, Exporter); 8] = [
-                            ("All URLs (internal.csv)…", "internal.csv", |a| report::internal_csv(&a.crawl, &a.audit)),
-                            ("Issues summary…", "issues.csv", |a| report::issues_csv(&a.crawl, &a.audit)),
-                            ("Every issue with its URLs…", "issue_urls.csv", |a| report::issue_urls_csv(&a.crawl, &a.audit)),
-                            ("All inlinks…", "inlinks.csv", |a| report::inlinks_csv(&a.crawl, &a.audit)),
-                            ("All outlinks…", "outlinks.csv", |a| report::outlinks_csv(&a.crawl)),
-                            ("All images…", "images.csv", |a| report::images_csv(&a.crawl)),
-                            ("Redirect chains…", "redirects.csv", |a| report::redirects_csv(&a.crawl)),
+                            ("All URLs (internal.csv)…", "internal.csv", |a| {
+                                report::internal_csv(&a.crawl, &a.audit)
+                            }),
+                            ("Issues summary…", "issues.csv", |a| {
+                                report::issues_csv(&a.crawl, &a.audit)
+                            }),
+                            ("Every issue with its URLs…", "issue_urls.csv", |a| {
+                                report::issue_urls_csv(&a.crawl, &a.audit)
+                            }),
+                            ("All inlinks…", "inlinks.csv", |a| {
+                                report::inlinks_csv(&a.crawl, &a.audit)
+                            }),
+                            ("All outlinks…", "outlinks.csv", |a| {
+                                report::outlinks_csv(&a.crawl)
+                            }),
+                            ("All images…", "images.csv", |a| {
+                                report::images_csv(&a.crawl)
+                            }),
+                            ("Redirect chains…", "redirects.csv", |a| {
+                                report::redirects_csv(&a.crawl)
+                            }),
                             ("Current table view…", "view.csv", |a| {
-                                let mut c = Crawl { start_url: a.crawl.start_url.clone(), ..Default::default() };
-                                c.pages = a.rows.iter().map(|&i| a.crawl.pages[i].clone()).collect();
+                                let mut c = Crawl {
+                                    start_url: a.crawl.start_url.clone(),
+                                    ..Default::default()
+                                };
+                                c.pages =
+                                    a.rows.iter().map(|&i| a.crawl.pages[i].clone()).collect();
                                 report::internal_csv(&c, &audit::run(&c))
                             }),
                         ];
@@ -819,35 +973,57 @@ impl App {
                     });
                 });
                 ui.menu_button("Reports", |ui| {
-                    if ui.add_enabled(has, egui::Button::new("HTML audit report…")).clicked() {
+                    if ui
+                        .add_enabled(has, egui::Button::new("HTML audit report…"))
+                        .clicked()
+                    {
                         self.show_report = true;
                         ui.close_menu();
                     }
                     if ui.button("CI workflow (GitHub Actions)…").clicked() {
                         if self.ci_url.is_empty() {
-                            self.ci_url = if self.crawl.start_url.is_empty() { self.url_input.clone() } else { self.crawl.start_url.clone() };
+                            self.ci_url = if self.crawl.start_url.is_empty() {
+                                self.url_input.clone()
+                            } else {
+                                self.crawl.start_url.clone()
+                            };
                         }
                         self.show_ci = true;
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Tools", |ui| {
-                    if ui.add_enabled(has, egui::Button::new("Title & description writer…")).clicked() {
+                    if ui
+                        .add_enabled(has, egui::Button::new("Title & description writer…"))
+                        .clicked()
+                    {
                         self.show_ai_writer = true;
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has, egui::Button::new("Internal link finder…")).clicked() {
+                    if ui
+                        .add_enabled(has, egui::Button::new("Internal link finder…"))
+                        .clicked()
+                    {
                         self.opportunities = ai::link_opportunities(&self.crawl);
                         self.show_links = true;
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has && self.state != State::Crawling, egui::Button::new("Re-run audit")).clicked() {
+                    if ui
+                        .add_enabled(
+                            has && self.state != State::Crawling,
+                            egui::Button::new("Re-run audit"),
+                        )
+                        .clicked()
+                    {
                         self.run_audit();
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Help", |ui| {
-                    if ui.button(format!("All {} checks…", catalogue().len())).clicked() {
+                    if ui
+                        .button(format!("All {} checks…", catalogue().len()))
+                        .clicked()
+                    {
                         self.show_catalogue = true;
                         ui.close_menu();
                     }
@@ -860,7 +1036,11 @@ impl App {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().weak());
+                    ui.label(
+                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .weak(),
+                    );
                     ui.label(RichText::new("ShoutingToad").strong().color(TOAD));
                     self.icon(ui, 16.0);
                 });
@@ -879,18 +1059,36 @@ impl App {
                         .desired_width((ui.available_width() - 420.0).max(260.0)),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.add_enabled(!busy, egui::Button::new(RichText::new("▶  Start").strong().color(TOAD))).clicked() || enter) && !busy {
+                if (ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(RichText::new("▶  Start").strong().color(TOAD)),
+                    )
+                    .clicked()
+                    || enter)
+                    && !busy
+                {
                     let u = self.url_input.clone();
                     self.start(vec![u], false);
                 }
-                let pause_label = if self.state == State::Paused { "Resume" } else { "Pause" };
-                if ui.add_enabled(busy, egui::Button::new(pause_label)).clicked() {
+                let pause_label = if self.state == State::Paused {
+                    "Resume"
+                } else {
+                    "Pause"
+                };
+                if ui
+                    .add_enabled(busy, egui::Button::new(pause_label))
+                    .clicked()
+                {
                     self.toggle_pause();
                 }
                 if ui.add_enabled(busy, egui::Button::new("Stop")).clicked() {
                     self.stop();
                 }
-                if ui.add_enabled(self.has_data() && !busy, egui::Button::new("Clear")).clicked() {
+                if ui
+                    .add_enabled(self.has_data() && !busy, egui::Button::new("Clear"))
+                    .clicked()
+                {
                     self.clear();
                 }
                 let total = (self.crawled + self.queued).max(1);
@@ -899,7 +1097,12 @@ impl App {
                     State::Idle => 0.0,
                     _ => self.crawled as f32 / total as f32,
                 };
-                ui.add(egui::ProgressBar::new(frac).desired_width(120.0).show_percentage().animate(self.state == State::Crawling));
+                ui.add(
+                    egui::ProgressBar::new(frac)
+                        .desired_width(120.0)
+                        .show_percentage()
+                        .animate(self.state == State::Crawling),
+                );
             });
             ui.add_space(4.0);
         });
@@ -984,80 +1187,157 @@ impl App {
     }
 
     fn issues_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("issues").resizable(true).default_width(330.0).width_range(250.0..=520.0).show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.heading("Issues");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.checkbox(&mut self.show_all_checks, "All checks").on_hover_text("Also list checks that passed");
+        egui::SidePanel::left("issues")
+            .resizable(true)
+            .default_width(330.0)
+            .width_range(250.0..=520.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.heading("Issues");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_all_checks, "All checks")
+                            .on_hover_text("Also list checks that passed");
+                    });
                 });
-            });
-            ui.horizontal(|ui| {
-                for (i, (k, name)) in [(Kind::Issue, "Issues"), (Kind::Warning, "Warnings"), (Kind::Opportunity, "Opportunities")].iter().enumerate() {
-                    let n = self.audit.triggered().filter(|(c, _)| catalogue()[*c].kind == *k).count();
-                    let text = RichText::new(format!("{name} {n}")).color(if self.show_kinds[i] { kind_color(*k) } else { Color32::GRAY });
-                    if ui.selectable_label(self.show_kinds[i], text).clicked() {
-                        self.show_kinds[i] = !self.show_kinds[i];
+                ui.horizontal(|ui| {
+                    for (i, (k, name)) in [
+                        (Kind::Issue, "Issues"),
+                        (Kind::Warning, "Warnings"),
+                        (Kind::Opportunity, "Opportunities"),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let n = self
+                            .audit
+                            .triggered()
+                            .filter(|(c, _)| catalogue()[*c].kind == *k)
+                            .count();
+                        let text =
+                            RichText::new(format!("{name} {n}")).color(if self.show_kinds[i] {
+                                kind_color(*k)
+                            } else {
+                                Color32::GRAY
+                            });
+                        if ui.selectable_label(self.show_kinds[i], text).clicked() {
+                            self.show_kinds[i] = !self.show_kinds[i];
+                        }
                     }
+                });
+                if self.audit_dirty
+                    && self.state == State::Crawling
+                    && self.crawl.pages.len() > 8000
+                {
+                    ui.label(
+                        RichText::new("Large crawl: the audit updates when the crawl finishes.")
+                            .small()
+                            .weak(),
+                    );
                 }
-            });
-            if self.audit_dirty && self.state == State::Crawling && self.crawl.pages.len() > 8000 {
-                ui.label(RichText::new("Large crawl: the audit updates when the crawl finishes.").small().weak());
-            }
-            ui.separator();
-            let cat = catalogue();
-            let mut clicked: Option<usize> = None;
-            egui::ScrollArea::vertical().id_salt("issues_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                for category in CATEGORIES {
-                    let mut items: Vec<(usize, usize)> = cat
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.category == *category && self.show_kinds[c.kind as usize])
-                        .map(|(i, _)| (i, self.audit.hits.get(i).map(|h| h.len()).unwrap_or(0)))
-                        .filter(|(_, n)| self.show_all_checks || *n > 0)
-                        .collect();
-                    if items.is_empty() {
-                        continue;
-                    }
-                    items.sort_by_key(|(i, n)| (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(*n)));
-                    let found = items.iter().filter(|(_, n)| *n > 0).count();
-                    egui::CollapsingHeader::new(RichText::new(format!("{category}  ({found})")).strong())
-                        .id_salt(category)
-                        .default_open(found > 0)
-                        .show(ui, |ui| {
-                            for (i, n) in items {
-                                let c = &cat[i];
-                                ui.horizontal(|ui| {
-                                    dot(ui, if n > 0 { kind_color(c.kind) } else { Color32::DARK_GRAY });
-                                    let sel = self.selected_check == Some(i);
-                                    let label = RichText::new(&c.name).color(if n > 0 { ui.visuals().text_color() } else { Color32::GRAY });
-                                    let r = ui.selectable_label(sel, label).on_hover_text(format!("{} · {} priority\n\n{}", c.kind.label(), c.priority.label(), c.description));
-                                    if r.clicked() {
-                                        clicked = Some(i);
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(RichText::new(n.to_string()).monospace().color(if n > 0 { kind_color(c.kind) } else { Color32::GRAY }));
-                                    });
-                                });
+                ui.separator();
+                let cat = catalogue();
+                let mut clicked: Option<usize> = None;
+                egui::ScrollArea::vertical()
+                    .id_salt("issues_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for category in CATEGORIES {
+                            let mut items: Vec<(usize, usize)> = cat
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, c)| {
+                                    c.category == *category && self.show_kinds[c.kind as usize]
+                                })
+                                .map(|(i, _)| {
+                                    (i, self.audit.hits.get(i).map(|h| h.len()).unwrap_or(0))
+                                })
+                                .filter(|(_, n)| self.show_all_checks || *n > 0)
+                                .collect();
+                            if items.is_empty() {
+                                continue;
                             }
-                        });
+                            items.sort_by_key(|(i, n)| {
+                                (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(*n))
+                            });
+                            let found = items.iter().filter(|(_, n)| *n > 0).count();
+                            egui::CollapsingHeader::new(
+                                RichText::new(format!("{category}  ({found})")).strong(),
+                            )
+                            .id_salt(category)
+                            .default_open(found > 0)
+                            .show(ui, |ui| {
+                                for (i, n) in items {
+                                    let c = &cat[i];
+                                    ui.horizontal(|ui| {
+                                        dot(
+                                            ui,
+                                            if n > 0 {
+                                                kind_color(c.kind)
+                                            } else {
+                                                Color32::DARK_GRAY
+                                            },
+                                        );
+                                        let sel = self.selected_check == Some(i);
+                                        let label = RichText::new(&c.name).color(if n > 0 {
+                                            ui.visuals().text_color()
+                                        } else {
+                                            Color32::GRAY
+                                        });
+                                        let r =
+                                            ui.selectable_label(sel, label).on_hover_text(format!(
+                                                "{} · {} priority\n\n{}",
+                                                c.kind.label(),
+                                                c.priority.label(),
+                                                c.description
+                                            ));
+                                        if r.clicked() {
+                                            clicked = Some(i);
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(n.to_string()).monospace().color(
+                                                        if n > 0 {
+                                                            kind_color(c.kind)
+                                                        } else {
+                                                            Color32::GRAY
+                                                        },
+                                                    ),
+                                                );
+                                            },
+                                        );
+                                    });
+                                }
+                            });
+                        }
+                    });
+                if let Some(i) = clicked {
+                    self.select_check(Some(i));
                 }
             });
-            if let Some(i) = clicked {
-                self.select_check(Some(i));
-            }
-        });
     }
 
     fn refresh_overview_stats(&mut self) {
         let pages = &self.crawl.pages;
-        let key = (pages.len(), pages.as_ptr() as usize, self.crawl.started.clone());
+        let key = (
+            pages.len(),
+            pages.as_ptr() as usize,
+            self.crawl.started.clone(),
+        );
         let st = &mut self.overview_stats;
-        let fresh = st.at.is_some_and(|t| self.state == State::Crawling && t.elapsed() < Duration::from_secs(1));
+        let fresh = st
+            .at
+            .is_some_and(|t| self.state == State::Crawling && t.elapsed() < Duration::from_secs(1));
         if st.key == key || fresh {
             return;
         }
-        let mut new = OverviewStats { key, at: Some(Instant::now()), ..Default::default() };
+        let mut new = OverviewStats {
+            key,
+            at: Some(Instant::now()),
+            ..Default::default()
+        };
         for p in pages {
             new.status[match p.status {
                 200..=299 => 0,
@@ -1088,77 +1368,130 @@ impl App {
         let st = &self.overview_stats;
         let (internal_html, indexable) = (st.internal_html, st.indexable);
         let score = self.audit.health_score(&self.crawl);
-        let counts = [Kind::Issue, Kind::Warning, Kind::Opportunity].map(|k| self.audit.triggered().filter(|(i, _)| cat[*i].kind == k).count());
+        let counts = [Kind::Issue, Kind::Warning, Kind::Opportunity].map(|k| {
+            self.audit
+                .triggered()
+                .filter(|(i, _)| cat[*i].kind == k)
+                .count()
+        });
         let mut jump: Option<usize> = None;
-        egui::ScrollArea::vertical().id_salt("overview").auto_shrink([false, false]).show(ui, |ui| {
-            let sc = if score >= 85 { GOOD } else if score >= 60 { WARNING } else { ISSUE };
-            let text = ui.visuals().text_color();
-            let cards: [(&str, String, Color32); 7] = [
-                ("Health score", format!("{score}/100"), sc),
-                ("URLs crawled", pages.len().to_string(), text),
-                ("Internal HTML pages", internal_html.to_string(), text),
-                ("Indexable pages", indexable.to_string(), text),
-                ("Issues", counts[0].to_string(), ISSUE),
-                ("Warnings", counts[1].to_string(), WARNING),
-                ("Opportunities", counts[2].to_string(), OPPORTUNITY),
-            ];
-            let per_row = ((ui.available_width() / 170.0).floor() as usize).clamp(1, cards.len());
-            for chunk in cards.chunks(per_row) {
-                ui.columns(per_row, |cols| {
-                    for (col, (label, value, color)) in cols.iter_mut().zip(chunk) {
-                        egui::Frame::group(col.style()).rounding(8.0).inner_margin(12.0).show(col, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.label(RichText::new(*label).small().weak());
-                            ui.label(RichText::new(value.as_str()).size(26.0).strong().color(*color));
-                        });
-                    }
-                });
-            }
-            ui.add_space(12.0);
-            ui.columns(2, |cols| {
-                let ui = &mut cols[0];
-                ui.heading("Top findings");
-                let mut list: Vec<(usize, &Vec<usize>)> = self.audit.triggered().collect();
-                list.sort_by_key(|(i, h)| (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(h.len())));
-                if list.is_empty() {
-                    ui.label(if self.state == State::Crawling { "Collecting data…" } else { "No issues found." });
-                }
-                for (i, hits) in list.iter().take(18) {
-                    let c = &cat[*i];
-                    ui.horizontal(|ui| {
-                        badge(ui, c.kind.label(), kind_color(c.kind));
-                        if ui.link(format!("{}: {}", c.category, c.name)).clicked() {
-                            jump = Some(*i);
+        egui::ScrollArea::vertical()
+            .id_salt("overview")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let sc = if score >= 85 {
+                    GOOD
+                } else if score >= 60 {
+                    WARNING
+                } else {
+                    ISSUE
+                };
+                let text = ui.visuals().text_color();
+                let cards: [(&str, String, Color32); 7] = [
+                    ("Health score", format!("{score}/100"), sc),
+                    ("URLs crawled", pages.len().to_string(), text),
+                    ("Internal HTML pages", internal_html.to_string(), text),
+                    ("Indexable pages", indexable.to_string(), text),
+                    ("Issues", counts[0].to_string(), ISSUE),
+                    ("Warnings", counts[1].to_string(), WARNING),
+                    ("Opportunities", counts[2].to_string(), OPPORTUNITY),
+                ];
+                let per_row =
+                    ((ui.available_width() / 170.0).floor() as usize).clamp(1, cards.len());
+                for chunk in cards.chunks(per_row) {
+                    ui.columns(per_row, |cols| {
+                        for (col, (label, value, color)) in cols.iter_mut().zip(chunk) {
+                            egui::Frame::group(col.style())
+                                .rounding(8.0)
+                                .inner_margin(12.0)
+                                .show(col, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(RichText::new(*label).small().weak());
+                                    ui.label(
+                                        RichText::new(value.as_str())
+                                            .size(26.0)
+                                            .strong()
+                                            .color(*color),
+                                    );
+                                });
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(hits.len().to_string()).monospace());
-                        });
                     });
                 }
+                ui.add_space(12.0);
+                ui.columns(2, |cols| {
+                    let ui = &mut cols[0];
+                    ui.heading("Top findings");
+                    let mut list: Vec<(usize, &Vec<usize>)> = self.audit.triggered().collect();
+                    list.sort_by_key(|(i, h)| {
+                        (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(h.len()))
+                    });
+                    if list.is_empty() {
+                        ui.label(if self.state == State::Crawling {
+                            "Collecting data…"
+                        } else {
+                            "No issues found."
+                        });
+                    }
+                    for (i, hits) in list.iter().take(18) {
+                        let c = &cat[*i];
+                        ui.horizontal(|ui| {
+                            badge(ui, c.kind.label(), kind_color(c.kind));
+                            if ui.link(format!("{}: {}", c.category, c.name)).clicked() {
+                                jump = Some(*i);
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(RichText::new(hits.len().to_string()).monospace());
+                                },
+                            );
+                        });
+                    }
 
-                let ui = &mut cols[1];
-                ui.heading("Response codes");
-                let buckets = [("2xx Success", GOOD), ("3xx Redirect", OPPORTUNITY), ("4xx Client error", ISSUE), ("5xx Server error", ISSUE)];
-                let total = pages.len().max(1) as f32;
-                for (k, (label, col)) in buckets.into_iter().enumerate() {
-                    let n = st.status[k];
-                    bar(ui, label, n, n as f32 / total, col);
-                }
-                let none = st.status[4];
-                bar(ui, "No response / blocked", none, none as f32 / total, Color32::GRAY);
-                ui.add_space(10.0);
-                ui.heading("Crawl depth (internal HTML)");
-                let max = st.depth.values().copied().max().unwrap_or(1) as f32;
-                for (&d, &n) in &st.depth {
-                    bar(ui, &if d == 10 { "10+".to_string() } else { d.to_string() }, n, n as f32 / max, TOAD);
-                }
-                ui.add_space(10.0);
-                ui.heading("Content types");
-                for (&k, &n) in &st.kinds {
-                    bar(ui, k, n, n as f32 / total, OPPORTUNITY);
-                }
+                    let ui = &mut cols[1];
+                    ui.heading("Response codes");
+                    let buckets = [
+                        ("2xx Success", GOOD),
+                        ("3xx Redirect", OPPORTUNITY),
+                        ("4xx Client error", ISSUE),
+                        ("5xx Server error", ISSUE),
+                    ];
+                    let total = pages.len().max(1) as f32;
+                    for (k, (label, col)) in buckets.into_iter().enumerate() {
+                        let n = st.status[k];
+                        bar(ui, label, n, n as f32 / total, col);
+                    }
+                    let none = st.status[4];
+                    bar(
+                        ui,
+                        "No response / blocked",
+                        none,
+                        none as f32 / total,
+                        Color32::GRAY,
+                    );
+                    ui.add_space(10.0);
+                    ui.heading("Crawl depth (internal HTML)");
+                    let max = st.depth.values().copied().max().unwrap_or(1) as f32;
+                    for (&d, &n) in &st.depth {
+                        bar(
+                            ui,
+                            &if d == 10 {
+                                "10+".to_string()
+                            } else {
+                                d.to_string()
+                            },
+                            n,
+                            n as f32 / max,
+                            TOAD,
+                        );
+                    }
+                    ui.add_space(10.0);
+                    ui.heading("Content types");
+                    for (&k, &n) in &st.kinds {
+                        bar(ui, k, n, n as f32 / total, OPPORTUNITY);
+                    }
+                });
             });
-        });
         if let Some(i) = jump {
             self.select_check(Some(i));
         }
@@ -1171,7 +1504,11 @@ impl App {
             egui::Frame::group(ui.style()).rounding(6.0).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     badge(ui, c.kind.label(), kind_color(c.kind));
-                    badge(ui, &format!("{} priority", c.priority.label()), Color32::GRAY);
+                    badge(
+                        ui,
+                        &format!("{} priority", c.priority.label()),
+                        Color32::GRAY,
+                    );
                     ui.label(RichText::new(format!("{}: {}", c.category, c.name)).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Show all URLs").clicked() {
@@ -1197,19 +1534,42 @@ impl App {
             });
         }
         ui.horizontal(|ui| {
-            if ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Filter by URL or title").desired_width(280.0)).changed() {
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("Filter by URL or title")
+                        .desired_width(280.0),
+                )
+                .changed()
+            {
                 self.rows_dirty = true;
             }
-            ui.label(RichText::new(format!("{} of {} URLs", self.rows.len(), self.crawl.pages.len())).weak());
+            ui.label(
+                RichText::new(format!(
+                    "{} of {} URLs",
+                    self.rows.len(),
+                    self.crawl.pages.len()
+                ))
+                .weak(),
+            );
         });
         ui.add_space(2.0);
 
         let mut new_sort: Option<Col> = None;
         let mut new_sel: Option<usize> = None;
         let cols: [(Col, &str); 12] = [
-            (Col::Id, "#"), (Col::Url, "Address"), (Col::Status, "Status"), (Col::Indexability, "Indexability"),
-            (Col::Title, "Title"), (Col::TitleLen, "Len"), (Col::Words, "Words"), (Col::Depth, "Depth"),
-            (Col::Inlinks, "Inlinks"), (Col::Time, "Time"), (Col::Size, "Size"), (Col::Issues, "Issues"),
+            (Col::Id, "#"),
+            (Col::Url, "Address"),
+            (Col::Status, "Status"),
+            (Col::Indexability, "Indexability"),
+            (Col::Title, "Title"),
+            (Col::TitleLen, "Len"),
+            (Col::Words, "Words"),
+            (Col::Depth, "Depth"),
+            (Col::Inlinks, "Inlinks"),
+            (Col::Time, "Time"),
+            (Col::Size, "Size"),
+            (Col::Issues, "Issues"),
         ];
         let (sort_col, asc) = self.sort;
         let rows = &self.rows;
@@ -1236,7 +1596,13 @@ impl App {
             .header(22.0, |mut h| {
                 for (c, name) in cols {
                     h.col(|ui| {
-                        if ui.add(egui::Label::new(RichText::new(name).strong()).sense(egui::Sense::click())).clicked() {
+                        if ui
+                            .add(
+                                egui::Label::new(RichText::new(name).strong())
+                                    .sense(egui::Sense::click()),
+                            )
+                            .clicked()
+                        {
                             new_sort = Some(c);
                         }
                         if sort_col == c {
@@ -1257,12 +1623,20 @@ impl App {
                         ui.add(egui::Label::new(&p.url).truncate());
                     });
                     row.col(|ui| {
-                        let txt = if p.status == 0 { "—".to_string() } else { p.status.to_string() };
+                        let txt = if p.status == 0 {
+                            "—".to_string()
+                        } else {
+                            p.status.to_string()
+                        };
                         ui.label(RichText::new(txt).strong().color(status_color(p.status)));
                     });
                     row.col(|ui| {
                         let l = indexability_label(p);
-                        ui.label(RichText::new(l).color(if l == "Indexable" { GOOD } else { Color32::GRAY }));
+                        ui.label(RichText::new(l).color(if l == "Indexable" {
+                            GOOD
+                        } else {
+                            Color32::GRAY
+                        }));
                     });
                     row.col(|ui| {
                         ui.add(egui::Label::new(p.title()).truncate());
@@ -1277,7 +1651,14 @@ impl App {
                         ui.label(p.depth.to_string());
                     });
                     row.col(|ui| {
-                        ui.label(audit.inlinks.get(i).map(|v| v.len()).unwrap_or(0).to_string());
+                        ui.label(
+                            audit
+                                .inlinks
+                                .get(i)
+                                .map(|v| v.len())
+                                .unwrap_or(0)
+                                .to_string(),
+                        );
                     });
                     row.col(|ui| {
                         ui.label(format!("{} ms", p.response_ms));
@@ -1287,7 +1668,11 @@ impl App {
                     });
                     row.col(|ui| {
                         let n = audit.page_issues.get(i).map(|v| v.len()).unwrap_or(0);
-                        ui.label(RichText::new(n.to_string()).color(if n > 0 { WARNING } else { Color32::GRAY }));
+                        ui.label(RichText::new(n.to_string()).color(if n > 0 {
+                            WARNING
+                        } else {
+                            Color32::GRAY
+                        }));
                     });
                     if row.response().clicked() {
                         new_sel = Some(i);
@@ -1295,7 +1680,11 @@ impl App {
                 });
             });
         if let Some(c) = new_sort {
-            self.sort = if self.sort.0 == c { (c, !self.sort.1) } else { (c, true) };
+            self.sort = if self.sort.0 == c {
+                (c, !self.sort.1)
+            } else {
+                (c, true)
+            };
             self.rows_dirty = true;
         }
         if let Some(i) = new_sel {
@@ -1512,11 +1901,23 @@ fn sort_triangle(ui: &mut egui::Ui, ascending: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     let c = rect.center();
     let pts = if ascending {
-        vec![egui::pos2(c.x - 4.0, c.y + 3.0), egui::pos2(c.x + 4.0, c.y + 3.0), egui::pos2(c.x, c.y - 3.0)]
+        vec![
+            egui::pos2(c.x - 4.0, c.y + 3.0),
+            egui::pos2(c.x + 4.0, c.y + 3.0),
+            egui::pos2(c.x, c.y - 3.0),
+        ]
     } else {
-        vec![egui::pos2(c.x - 4.0, c.y - 3.0), egui::pos2(c.x + 4.0, c.y - 3.0), egui::pos2(c.x, c.y + 3.0)]
+        vec![
+            egui::pos2(c.x - 4.0, c.y - 3.0),
+            egui::pos2(c.x + 4.0, c.y - 3.0),
+            egui::pos2(c.x, c.y + 3.0),
+        ]
     };
-    ui.painter().add(egui::Shape::convex_polygon(pts, ui.visuals().text_color(), egui::Stroke::NONE));
+    ui.painter().add(egui::Shape::convex_polygon(
+        pts,
+        ui.visuals().text_color(),
+        egui::Stroke::NONE,
+    ));
 }
 
 fn dot(ui: &mut egui::Ui, color: Color32) {
@@ -1530,13 +1931,18 @@ fn row_num(i: usize) -> usize {
 
 fn bar(ui: &mut egui::Ui, label: &str, n: usize, frac: f32, color: Color32) {
     ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(egui::vec2(150.0, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_min_width(150.0);
-            ui.add(egui::Label::new(label).truncate());
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(150.0, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(150.0);
+                ui.add(egui::Label::new(label).truncate());
+            },
+        );
         let w = (ui.available_width() - 60.0).max(60.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 12.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+        ui.painter()
+            .rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
         let mut fill = rect;
         fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
         ui.painter().rect_filled(fill, 3.0, color);
@@ -1622,19 +2028,46 @@ impl App {
     fn list_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.show_list;
         let mut go = false;
-        egui::Window::new("List mode: audit specific URLs").open(&mut open).default_size([560.0, 360.0]).show(ctx, |ui| {
-            ui.label("Paste one URL per line. Only these URLs are audited; links are not followed.");
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.settings.list_text).font(egui::TextStyle::Monospace).desired_rows(12).desired_width(f32::INFINITY).hint_text("https://example.com/\nhttps://example.com/about"));
+        egui::Window::new("List mode: audit specific URLs")
+            .open(&mut open)
+            .default_size([560.0, 360.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    "Paste one URL per line. Only these URLs are audited; links are not followed.",
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.settings.list_text)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_rows(12)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("https://example.com/\nhttps://example.com/about"),
+                        );
+                    });
+                let n = self
+                    .settings
+                    .list_text
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .count();
+                if ui
+                    .add_enabled(n > 0, egui::Button::new(format!("Audit {n} URLs")))
+                    .clicked()
+                {
+                    go = true;
+                }
             });
-            let n = self.settings.list_text.lines().filter(|l| !l.trim().is_empty()).count();
-            if ui.add_enabled(n > 0, egui::Button::new(format!("Audit {n} URLs"))).clicked() {
-                go = true;
-            }
-        });
         self.show_list = open;
         if go {
-            let urls: Vec<String> = self.settings.list_text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+            let urls: Vec<String> = self
+                .settings
+                .list_text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
             self.show_list = false;
             self.start(urls, true);
         }
@@ -1700,7 +2133,8 @@ impl App {
             self.ai_test_result = None;
             self.ai_test_rx = Some(rx);
             std::thread::spawn(move || {
-                let r = ai::complete(&cfg, "Reply with the single word OK.", "Say OK.").map(|t| t.trim().chars().take(40).collect());
+                let r = ai::complete(&cfg, "Reply with the single word OK.", "Say OK.")
+                    .map(|t| t.trim().chars().take(40).collect());
                 let _ = tx.send(r);
             });
         }
@@ -1710,83 +2144,142 @@ impl App {
         let mut open = self.show_ai_writer;
         let mut start = false;
         let mut export = false;
-        egui::Window::new("Title & description writer").open(&mut open).default_size([980.0, 560.0]).show(ctx, |ui| {
-            let n = ai::candidates(&self.crawl).len();
-            let engine = if self.settings.ai.provider == Provider::Offline || !self.settings.ai.ready() {
-                "Offline rules".to_string()
-            } else {
-                format!("{} ({})", self.settings.ai.provider.label(), self.settings.ai.model)
-            };
-            ui.horizontal(|ui| {
-                ui.label(format!("{n} indexable pages have a missing, short or long title or description."));
-                ui.label(RichText::new(format!("Engine: {engine}")).weak());
-                if ui.link("Change…").clicked() {
-                    self.show_ai_settings = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                let running = self.ai_rx.is_some();
-                if ui.add_enabled(!running && n > 0, egui::Button::new(RichText::new("Write suggestions").strong())).clicked() {
-                    start = true;
-                }
-                if running {
-                    if ui.button("Cancel").clicked() {
-                        self.ai_cancel.store(true, Ordering::Relaxed);
-                    }
-                    let (a, b) = self.ai_progress;
-                    ui.add(egui::ProgressBar::new(a as f32 / b.max(1) as f32).text(format!("{a} / {b}")).desired_width(200.0));
-                }
-                if ui.add_enabled(!self.suggestions.is_empty(), egui::Button::new("Export CSV…")).clicked() {
-                    export = true;
-                }
-            });
-            ui.separator();
-            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                egui::Grid::new("sugg").striped(true).num_columns(4).spacing([14.0, 8.0]).show(ui, |ui| {
-                    for t in ["Page", "Suggested title", "Suggested description", ""] {
-                        ui.label(RichText::new(t).strong());
-                    }
-                    ui.end_row();
-                    for s in &self.suggestions {
-                        ui.vertical(|ui| {
-                            ui.set_max_width(260.0);
-                            ui.add(egui::Label::new(RichText::new(&s.url).small()).wrap());
-                            ui.label(RichText::new(&s.reason).small().color(WARNING));
-                            if let Some(e) = &s.error {
-                                ui.label(RichText::new(format!("AI error: {e}")).small().color(ISSUE));
-                            }
-                        });
-                        ui.vertical(|ui| {
-                            ui.set_max_width(280.0);
-                            ui.add(egui::Label::new(RichText::new(&s.title).strong()).wrap());
-                            let n = s.title.chars().count();
-                            ui.label(RichText::new(format!("{n} chars · {} px", pixel_width(&s.title, 20.0))).small().color(if n <= 60 { GOOD } else { WARNING }));
-                        });
-                        ui.vertical(|ui| {
-                            ui.set_max_width(360.0);
-                            ui.add(egui::Label::new(&s.description).wrap());
-                            let n = s.description.chars().count();
-                            ui.label(RichText::new(format!("{n} chars · {}", s.source)).small().color(if (70..=160).contains(&n) { GOOD } else { WARNING }));
-                        });
-                        ui.vertical(|ui| {
-                            if ui.small_button("Copy title").clicked() {
-                                ui.ctx().copy_text(s.title.clone());
-                            }
-                            if ui.small_button("Copy description").clicked() {
-                                ui.ctx().copy_text(s.description.clone());
-                            }
-                        });
-                        ui.end_row();
+        egui::Window::new("Title & description writer")
+            .open(&mut open)
+            .default_size([980.0, 560.0])
+            .show(ctx, |ui| {
+                let n = ai::candidates(&self.crawl).len();
+                let engine = if self.settings.ai.provider == Provider::Offline
+                    || !self.settings.ai.ready()
+                {
+                    "Offline rules".to_string()
+                } else {
+                    format!(
+                        "{} ({})",
+                        self.settings.ai.provider.label(),
+                        self.settings.ai.model
+                    )
+                };
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{n} indexable pages have a missing, short or long title or description."
+                    ));
+                    ui.label(RichText::new(format!("Engine: {engine}")).weak());
+                    if ui.link("Change…").clicked() {
+                        self.show_ai_settings = true;
                     }
                 });
+                ui.horizontal(|ui| {
+                    let running = self.ai_rx.is_some();
+                    if ui
+                        .add_enabled(
+                            !running && n > 0,
+                            egui::Button::new(RichText::new("Write suggestions").strong()),
+                        )
+                        .clicked()
+                    {
+                        start = true;
+                    }
+                    if running {
+                        if ui.button("Cancel").clicked() {
+                            self.ai_cancel.store(true, Ordering::Relaxed);
+                        }
+                        let (a, b) = self.ai_progress;
+                        ui.add(
+                            egui::ProgressBar::new(a as f32 / b.max(1) as f32)
+                                .text(format!("{a} / {b}"))
+                                .desired_width(200.0),
+                        );
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.suggestions.is_empty(),
+                            egui::Button::new("Export CSV…"),
+                        )
+                        .clicked()
+                    {
+                        export = true;
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Grid::new("sugg")
+                            .striped(true)
+                            .num_columns(4)
+                            .spacing([14.0, 8.0])
+                            .show(ui, |ui| {
+                                for t in ["Page", "Suggested title", "Suggested description", ""] {
+                                    ui.label(RichText::new(t).strong());
+                                }
+                                ui.end_row();
+                                for s in &self.suggestions {
+                                    ui.vertical(|ui| {
+                                        ui.set_max_width(260.0);
+                                        ui.add(
+                                            egui::Label::new(RichText::new(&s.url).small()).wrap(),
+                                        );
+                                        ui.label(RichText::new(&s.reason).small().color(WARNING));
+                                        if let Some(e) = &s.error {
+                                            ui.label(
+                                                RichText::new(format!("AI error: {e}"))
+                                                    .small()
+                                                    .color(ISSUE),
+                                            );
+                                        }
+                                    });
+                                    ui.vertical(|ui| {
+                                        ui.set_max_width(280.0);
+                                        ui.add(
+                                            egui::Label::new(RichText::new(&s.title).strong())
+                                                .wrap(),
+                                        );
+                                        let n = s.title.chars().count();
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{n} chars · {} px",
+                                                pixel_width(&s.title, 20.0)
+                                            ))
+                                            .small()
+                                            .color(if n <= 60 { GOOD } else { WARNING }),
+                                        );
+                                    });
+                                    ui.vertical(|ui| {
+                                        ui.set_max_width(360.0);
+                                        ui.add(egui::Label::new(&s.description).wrap());
+                                        let n = s.description.chars().count();
+                                        ui.label(
+                                            RichText::new(format!("{n} chars · {}", s.source))
+                                                .small()
+                                                .color(if (70..=160).contains(&n) {
+                                                    GOOD
+                                                } else {
+                                                    WARNING
+                                                }),
+                                        );
+                                    });
+                                    ui.vertical(|ui| {
+                                        if ui.small_button("Copy title").clicked() {
+                                            ui.ctx().copy_text(s.title.clone());
+                                        }
+                                        if ui.small_button("Copy description").clicked() {
+                                            ui.ctx().copy_text(s.description.clone());
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                    });
             });
-        });
         self.show_ai_writer = open;
         if start {
             self.start_ai();
         }
         if export {
-            self.save_file("title_description_suggestions.csv", "csv", |a| report::suggestions_csv(&a.suggestions));
+            self.save_file("title_description_suggestions.csv", "csv", |a| {
+                report::suggestions_csv(&a.suggestions)
+            });
         }
     }
 
@@ -1830,7 +2323,9 @@ impl App {
         });
         self.show_links = open;
         if export {
-            self.save_file("internal_link_opportunities.csv", "csv", |a| report::link_opportunities_csv(&a.opportunities));
+            self.save_file("internal_link_opportunities.csv", "csv", |a| {
+                report::link_opportunities_csv(&a.opportunities)
+            });
         }
     }
 
@@ -1854,8 +2349,17 @@ impl App {
         self.show_report = open;
         if save {
             let name = format!("seo-audit-{}.html", host_slug(&self.crawl.start_url));
-            if let Some(path) = rfd::FileDialog::new().set_file_name(name).add_filter("HTML", &["html"]).save_file() {
-                let html = report::html_report(&self.crawl, &self.audit, &self.settings.client_name, &self.settings.prepared_by);
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(name)
+                .add_filter("HTML", &["html"])
+                .save_file()
+            {
+                let html = report::html_report(
+                    &self.crawl,
+                    &self.audit,
+                    &self.settings.client_name,
+                    &self.settings.prepared_by,
+                );
                 match std::fs::write(&path, html) {
                     Ok(_) => {
                         self.toast(format!("Saved {}", path.display()));
@@ -1907,48 +2411,78 @@ impl App {
     fn catalogue_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.show_catalogue;
         let cat = catalogue();
-        egui::Window::new(format!("All {} checks", cat.len())).open(&mut open).default_size([900.0, 560.0]).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.catalogue_search).hint_text("Search checks").desired_width(300.0));
-                ui.label(RichText::new(format!("{} categories", CATEGORIES.len())).weak());
-            });
-            ui.separator();
-            let q = self.catalogue_search.to_lowercase();
-            let list: Vec<usize> = (0..cat.len())
-                .filter(|&i| q.is_empty() || cat[i].name.to_lowercase().contains(&q) || cat[i].category.to_lowercase().contains(&q) || cat[i].id.contains(&q))
-                .collect();
-            ui.columns(2, |cols| {
-                egui::ScrollArea::vertical().id_salt("catlist").auto_shrink([false, false]).show(&mut cols[0], |ui| {
-                    for i in list {
-                        let c = &cat[i];
-                        ui.horizontal(|ui| {
-                            dot(ui, kind_color(c.kind));
-                            if ui.selectable_label(self.catalogue_selected == Some(i), format!("{}: {}", c.category, c.name)).clicked() {
-                                self.catalogue_selected = Some(i);
+        egui::Window::new(format!("All {} checks", cat.len()))
+            .open(&mut open)
+            .default_size([900.0, 560.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.catalogue_search)
+                            .hint_text("Search checks")
+                            .desired_width(300.0),
+                    );
+                    ui.label(RichText::new(format!("{} categories", CATEGORIES.len())).weak());
+                });
+                ui.separator();
+                let q = self.catalogue_search.to_lowercase();
+                let list: Vec<usize> = (0..cat.len())
+                    .filter(|&i| {
+                        q.is_empty()
+                            || cat[i].name.to_lowercase().contains(&q)
+                            || cat[i].category.to_lowercase().contains(&q)
+                            || cat[i].id.contains(&q)
+                    })
+                    .collect();
+                ui.columns(2, |cols| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("catlist")
+                        .auto_shrink([false, false])
+                        .show(&mut cols[0], |ui| {
+                            for i in list {
+                                let c = &cat[i];
+                                ui.horizontal(|ui| {
+                                    dot(ui, kind_color(c.kind));
+                                    if ui
+                                        .selectable_label(
+                                            self.catalogue_selected == Some(i),
+                                            format!("{}: {}", c.category, c.name),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.catalogue_selected = Some(i);
+                                    }
+                                });
                             }
                         });
+                    let ui = &mut cols[1];
+                    if let Some(i) = self.catalogue_selected {
+                        let c = &cat[i];
+                        ui.heading(&c.name);
+                        ui.horizontal(|ui| {
+                            badge(ui, c.kind.label(), kind_color(c.kind));
+                            badge(
+                                ui,
+                                &format!("{} priority", c.priority.label()),
+                                Color32::GRAY,
+                            );
+                            ui.label(RichText::new(c.category).weak());
+                        });
+                        ui.label(RichText::new(&c.id).monospace().small().weak());
+                        ui.add_space(6.0);
+                        ui.label(&c.description);
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("How to fix").strong());
+                        ui.label(&c.fix);
+                    } else {
+                        ui.label(
+                            RichText::new(
+                                "Select a check to see what it looks for and how to fix it.",
+                            )
+                            .weak(),
+                        );
                     }
                 });
-                let ui = &mut cols[1];
-                if let Some(i) = self.catalogue_selected {
-                    let c = &cat[i];
-                    ui.heading(&c.name);
-                    ui.horizontal(|ui| {
-                        badge(ui, c.kind.label(), kind_color(c.kind));
-                        badge(ui, &format!("{} priority", c.priority.label()), Color32::GRAY);
-                        ui.label(RichText::new(c.category).weak());
-                    });
-                    ui.label(RichText::new(&c.id).monospace().small().weak());
-                    ui.add_space(6.0);
-                    ui.label(&c.description);
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("How to fix").strong());
-                    ui.label(&c.fix);
-                } else {
-                    ui.label(RichText::new("Select a check to see what it looks for and how to fix it.").weak());
-                }
             });
-        });
         self.show_catalogue = open;
     }
 

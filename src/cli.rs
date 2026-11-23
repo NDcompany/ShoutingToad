@@ -10,7 +10,8 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
-const HELP: &str = "ShoutingToad SEO Spider: crawls a website and audits it for over 300 SEO and UX issues.
+const HELP: &str =
+    "ShoutingToad SEO Spider: crawls a website and audits it for over 300 SEO and UX issues.
 
 USAGE:
     shouting-toad                         Open the desktop app
@@ -88,8 +89,15 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
 
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
-        let mut val = |name: &str| it.next().cloned().ok_or_else(|| format!("{name} needs a value"));
-        let num = |s: String, name: &str| s.parse::<usize>().map_err(|_| format!("{name} must be a number"));
+        let mut val = |name: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
+        let num = |s: String, name: &str| {
+            s.parse::<usize>()
+                .map_err(|_| format!("{name} must be a number"))
+        };
         match a.as_str() {
             "--out" => out = PathBuf::from(val("--out")?),
             "--max-urls" => cfg.max_urls = num(val("--max-urls")?, "--max-urls")?,
@@ -111,18 +119,28 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
                     "high" => Priority::High,
                     "medium" => Priority::Medium,
                     "low" => Priority::Low,
-                    other => return Err(format!("--fail-on must be high, medium or low (got '{other}')")),
+                    other => {
+                        return Err(format!(
+                            "--fail-on must be high, medium or low (got '{other}')"
+                        ))
+                    }
                 })
             }
             "--fail-on-check" => {
                 let id = val("--fail-on-check")?;
-                fail_checks.push(find(&id).ok_or_else(|| format!("unknown check id '{id}' (run `shouting-toad checks`)"))?);
+                fail_checks.push(find(&id).ok_or_else(|| {
+                    format!("unknown check id '{id}' (run `shouting-toad checks`)")
+                })?);
             }
             s if s.starts_with("--") => return Err(format!("unknown option '{s}'")),
             s => target = Some(s.to_string()),
         }
     }
-    let target = target.ok_or(if list_mode { "list needs a file of URLs" } else { "crawl needs a URL" })?;
+    let target = target.ok_or(if list_mode {
+        "list needs a file of URLs"
+    } else {
+        "crawl needs a URL"
+    })?;
     let seeds: Vec<String> = if list_mode {
         std::fs::read_to_string(&target)
             .map_err(|e| format!("could not read {target}: {e}"))?
@@ -144,7 +162,9 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     let started = Instant::now();
     let handle = crawler::start(seeds.clone(), list_mode, cfg)?;
     let mut crawl = Crawl {
-        start_url: crawler::normalize_url(&seeds[0]).map(|u| u.to_string()).unwrap_or_default(),
+        start_url: crawler::normalize_url(&seeds[0])
+            .map(|u| u.to_string())
+            .unwrap_or_default(),
         started: chrono::Local::now().to_rfc3339(),
         ..Default::default()
     };
@@ -155,7 +175,9 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         match ev {
             Event::Page(p) => crawl.pages.push(*p),
             Event::Site(s) => crawl.site = *s,
-            Event::Progress { crawled, queued, .. } => {
+            Event::Progress {
+                crawled, queued, ..
+            } => {
                 if !quiet && crawled % 50 == 0 {
                     eprintln!("  {crawled} crawled, {queued} queued");
                 }
@@ -176,31 +198,70 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     let audit = audit::run(&crawl);
     let audit_secs = t_audit.elapsed().as_secs_f32();
     let t_write = Instant::now();
-    std::fs::create_dir_all(&out).map_err(|e| format!("could not create {}: {e}", out.display()))?;
+    std::fs::create_dir_all(&out)
+        .map_err(|e| format!("could not create {}: {e}", out.display()))?;
     // The exports are independent and the per-link ones reach hundreds of MB at 50k+ URLs:
     // write them in parallel, streaming straight to disk.
-    let file = |name: &str| File::create(out.join(name)).map(|f| BufWriter::with_capacity(1 << 20, f));
+    let file =
+        |name: &str| File::create(out.join(name)).map(|f| BufWriter::with_capacity(1 << 20, f));
     let file = &file;
     let (c, a, project) = (&crawl, &audit, out.join("crawl.shoutingtoad"));
-    type Export<'a> = (&'static str, Box<dyn FnOnce() -> std::io::Result<()> + Send + 'a>);
+    type Export<'a> = (
+        &'static str,
+        Box<dyn FnOnce() -> std::io::Result<()> + Send + 'a>,
+    );
     let exports: Vec<Export> = vec![
-        ("report.html", Box::new(move || file("report.html")?.write_all(report::html_report(c, a, "", "").as_bytes()))),
-        ("issues.csv", Box::new(move || file("issues.csv")?.write_all(report::issues_csv(c, a).as_bytes()))),
-        ("issue_urls.csv", Box::new(move || report::issue_urls_csv_to(file("issue_urls.csv")?, c, a).map(drop))),
-        ("internal.csv", Box::new(move || report::internal_csv_to(file("internal.csv")?, c, a).map(drop))),
-        ("inlinks.csv", Box::new(move || report::inlinks_csv_to(file("inlinks.csv")?, c, a).map(drop))),
-        ("outlinks.csv", Box::new(move || report::outlinks_csv_to(file("outlinks.csv")?, c).map(drop))),
-        ("images.csv", Box::new(move || report::images_csv_to(file("images.csv")?, c).map(drop))),
-        ("redirects.csv", Box::new(move || report::redirects_csv_to(file("redirects.csv")?, c).map(drop))),
-        ("crawl.shoutingtoad", Box::new(move || c.save(&project).map_err(std::io::Error::other))),
+        (
+            "report.html",
+            Box::new(move || {
+                file("report.html")?.write_all(report::html_report(c, a, "", "").as_bytes())
+            }),
+        ),
+        (
+            "issues.csv",
+            Box::new(move || file("issues.csv")?.write_all(report::issues_csv(c, a).as_bytes())),
+        ),
+        (
+            "issue_urls.csv",
+            Box::new(move || report::issue_urls_csv_to(file("issue_urls.csv")?, c, a).map(drop)),
+        ),
+        (
+            "internal.csv",
+            Box::new(move || report::internal_csv_to(file("internal.csv")?, c, a).map(drop)),
+        ),
+        (
+            "inlinks.csv",
+            Box::new(move || report::inlinks_csv_to(file("inlinks.csv")?, c, a).map(drop)),
+        ),
+        (
+            "outlinks.csv",
+            Box::new(move || report::outlinks_csv_to(file("outlinks.csv")?, c).map(drop)),
+        ),
+        (
+            "images.csv",
+            Box::new(move || report::images_csv_to(file("images.csv")?, c).map(drop)),
+        ),
+        (
+            "redirects.csv",
+            Box::new(move || report::redirects_csv_to(file("redirects.csv")?, c).map(drop)),
+        ),
+        (
+            "crawl.shoutingtoad",
+            Box::new(move || c.save(&project).map_err(std::io::Error::other)),
+        ),
     ];
     std::thread::scope(|s| {
-        let running: Vec<_> = exports.into_iter().map(|(name, f)| (name, s.spawn(f))).collect();
-        running.into_iter().try_for_each(|(name, h)| match h.join() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(format!("could not write {name}: {e}")),
-            Err(_) => Err(format!("could not write {name}: the export crashed")),
-        })
+        let running: Vec<_> = exports
+            .into_iter()
+            .map(|(name, f)| (name, s.spawn(f)))
+            .collect();
+        running
+            .into_iter()
+            .try_for_each(|(name, h)| match h.join() {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(format!("could not write {name}: {e}")),
+                Err(_) => Err(format!("could not write {name}: the export crashed")),
+            })
     })?;
     let write_secs = t_write.elapsed().as_secs_f32();
 
@@ -225,11 +286,21 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     top.sort_by_key(|(i, h)| (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(h.len())));
     for (i, hits) in top.iter().take(15) {
         let c = &cat[*i];
-        println!("  [{:<11} {:<6}] {:<55} {:>6} URLs", c.kind.label(), c.priority.label(), format!("{}: {}", c.category, c.name), hits.len());
+        println!(
+            "  [{:<11} {:<6}] {:<55} {:>6} URLs",
+            c.kind.label(),
+            c.priority.label(),
+            format!("{}: {}", c.category, c.name),
+            hits.len()
+        );
     }
     println!("Reports written to {}", out.display());
 
-    let failed_level = fail_on.is_some_and(|lvl| audit.triggered().any(|(i, _)| cat[i].kind == Kind::Issue && cat[i].priority <= lvl));
+    let failed_level = fail_on.is_some_and(|lvl| {
+        audit
+            .triggered()
+            .any(|(i, _)| cat[i].kind == Kind::Issue && cat[i].priority <= lvl)
+    });
     let failed_check = fail_checks.iter().any(|&i| !audit.hits[i].is_empty());
     // ponytail: the process exits right after this; freeing millions of small allocations one
     // by one takes ~10s at 50k URLs, so leave it to the OS.

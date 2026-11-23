@@ -14,14 +14,22 @@ fn main() {
         .set("ProductName", "ShoutingToad")
         .set("FileDescription", "ShoutingToad SEO Spider")
         .set("CompanyName", "N&D Co.")
-        .set("LegalCopyright", "Copyright N&D Co. Licensed under AGPL-3.0-or-later.");
+        .set(
+            "LegalCopyright",
+            "Copyright N&D Co. Licensed under AGPL-3.0-or-later.",
+        );
     if let Err(e) = res.compile() {
         println!("cargo:warning=could not embed the Windows icon: {e}");
     }
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-        let manifest = std::path::Path::new(&dir).join("assets").join("windows.manifest");
+        let manifest = std::path::Path::new(&dir)
+            .join("assets")
+            .join("windows.manifest");
         println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
-        println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+        println!(
+            "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
     }
 }

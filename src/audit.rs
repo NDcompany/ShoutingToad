@@ -177,7 +177,11 @@ pub struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     pub fn new(crawl: &'a Crawl) -> Ctx<'a> {
         let pages = &crawl.pages;
-        let by_url: FxMap<&str, usize> = pages.iter().enumerate().map(|(i, p)| (p.url.as_str(), i)).collect();
+        let by_url: FxMap<&str, usize> = pages
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.url.as_str(), i))
+            .collect();
         let by_id = pages.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         let mut inlinks = vec![Vec::new(); pages.len()];
         for (si, p) in pages.iter().enumerate() {
@@ -220,14 +224,35 @@ impl<'a> Ctx<'a> {
         }
         let near_dup = near_duplicates(pages);
         let sitemap = crawl.site.sitemap_urls.iter().map(|s| s.as_str()).collect();
-        let start_id = pages.iter().find(|p| p.source == Some(Source::Seed)).map(|p| p.id);
+        let start_id = pages
+            .iter()
+            .find(|p| p.source == Some(Source::Seed))
+            .map(|p| p.id);
         // URLs reached through a redirect from a crawled URL (link targets of 301s etc.).
         let redirect_targets = pages
             .iter()
-            .filter(|p| p.is_redirect() && !matches!(p.source, Some(Source::Robots) | Some(Source::Sitemap)))
+            .filter(|p| {
+                p.is_redirect() && !matches!(p.source, Some(Source::Robots) | Some(Source::Sitemap))
+            })
             .filter_map(|p| p.redirect_to.as_deref())
             .collect();
-        let mut ctx = Ctx { crawl, by_url, by_id, inlinks, titles, descs, keywords, h1s, h2s, hashes, near_dup, sitemap, ok_urls_lower, start_id, redirect_targets };
+        let mut ctx = Ctx {
+            crawl,
+            by_url,
+            by_id,
+            inlinks,
+            titles,
+            descs,
+            keywords,
+            h1s,
+            h2s,
+            hashes,
+            near_dup,
+            sitemap,
+            ok_urls_lower,
+            start_id,
+            redirect_targets,
+        };
         // When the start URL redirects (http -> https, bare -> www), site-level checks belong to the final page.
         if let Some(seed) = pages.iter().find(|p| p.source == Some(Source::Seed)) {
             if let (Some(f), _, false) = ctx.follow(&seed.url) {
@@ -249,8 +274,18 @@ impl<'a> Ctx<'a> {
     pub fn urls_only(crawl: &'a Crawl) -> Ctx<'a> {
         Ctx {
             crawl,
-            by_url: crawl.pages.iter().enumerate().map(|(i, p)| (p.url.as_str(), i)).collect(),
-            by_id: crawl.pages.iter().enumerate().map(|(i, p)| (p.id, i)).collect(),
+            by_url: crawl
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.url.as_str(), i))
+                .collect(),
+            by_id: crawl
+                .pages
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.id, i))
+                .collect(),
             inlinks: Vec::new(),
             titles: FxMap::default(),
             descs: FxMap::default(),
@@ -271,7 +306,9 @@ impl<'a> Ctx<'a> {
     }
 
     pub fn status(&self, url: &str) -> Option<u16> {
-        self.page(url).filter(|p| !p.blocked_by_robots).map(|p| p.status)
+        self.page(url)
+            .filter(|p| !p.blocked_by_robots)
+            .map(|p| p.status)
     }
 
     pub fn index_of(&self, p: &Page) -> Option<usize> {
@@ -279,7 +316,9 @@ impl<'a> Ctx<'a> {
     }
 
     pub fn inlinks_of(&self, p: &Page) -> &[(usize, usize)] {
-        self.index_of(p).map(|i| self.inlinks[i].as_slice()).unwrap_or(&[])
+        self.index_of(p)
+            .map(|i| self.inlinks[i].as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn is_start(&self, p: &Page) -> bool {
@@ -316,7 +355,11 @@ impl<'a> Ctx<'a> {
         self.near_dup.contains(&p.id)
     }
     pub fn case_variants(&self, p: &Page) -> bool {
-        self.ok_urls_lower.get(&p.url.to_lowercase()).copied().unwrap_or(0) > 1
+        self.ok_urls_lower
+            .get(&p.url.to_lowercase())
+            .copied()
+            .unwrap_or(0)
+            > 1
     }
 
     /// Follow a redirect chain. Returns (final page, hops, looped).
@@ -359,13 +402,20 @@ impl<'a> Ctx<'a> {
 fn near_duplicates(pages: &[Page]) -> FxSet<usize> {
     let cands: Vec<(usize, u64, u64)> = pages
         .iter()
-        .filter_map(|p| ihd(p).filter(|h| h.word_count >= 50).map(|h| (p.id, h.simhash, h.content_hash)))
+        .filter_map(|p| {
+            ihd(p)
+                .filter(|h| h.word_count >= 50)
+                .map(|h| (p.id, h.simhash, h.content_hash))
+        })
         .collect();
     let mut out = FxSet::default();
     for band in 0..4 {
         let mut buckets: FxMap<u64, Vec<usize>> = FxMap::default();
         for (i, (_, sh, _)) in cands.iter().enumerate() {
-            buckets.entry(sh >> (band * 16) & 0xffff).or_default().push(i);
+            buckets
+                .entry(sh >> (band * 16) & 0xffff)
+                .or_default()
+                .push(i);
         }
         for members in buckets.values() {
             let m = &members[..members.len().min(400)];
@@ -403,7 +453,12 @@ impl Audit {
     pub fn health_score(&self, crawl: &Crawl) -> u32 {
         let html = crawl.pages.iter().filter(|p| ih(p)).count();
         // Nothing loaded (TLS failure, DNS error, every page 4xx/5xx): the site is not healthy.
-        if html == 0 && crawl.pages.iter().any(|p| p.is_internal && !p.blocked_by_robots) {
+        if html == 0
+            && crawl
+                .pages
+                .iter()
+                .any(|p| p.is_internal && !p.blocked_by_robots)
+        {
             return 0;
         }
         let base = html.max(1) as f32;
@@ -431,7 +486,10 @@ pub fn run(crawl: &Crawl) -> Audit {
     let ctx = Ctx::new(crawl);
     let checks: &[Check] = catalogue();
     let pages = &crawl.pages;
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16);
     // Work items are (check, page chunk) pairs pulled from a shared counter, so the few
     // expensive link checks spread over every thread instead of stalling one of them.
     let chunk = pages.len().div_ceil(threads * 4).max(512);
@@ -453,8 +511,10 @@ pub fn run(crawl: &Crawl) -> Audit {
                         let range = k * chunk..((k + 1) * chunk).min(pages.len());
                         // a check that panics on odd data loses only its own chunk
                         let hits: Vec<usize> =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| range.filter(|&i| (c.test)(&pages[i], ctx)).collect()))
-                                .unwrap_or_default();
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                range.filter(|&i| (c.test)(&pages[i], ctx)).collect()
+                            }))
+                            .unwrap_or_default();
                         if !hits.is_empty() {
                             out.push((t, hits));
                         }
@@ -462,7 +522,10 @@ pub fn run(crawl: &Crawl) -> Audit {
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
     });
     parts.sort_unstable_by_key(|(t, _)| *t);
     let mut hits: Vec<Vec<usize>> = vec![Vec::new(); checks.len()];
@@ -475,7 +538,11 @@ pub fn run(crawl: &Crawl) -> Audit {
             page_issues[pi].push(ci);
         }
     }
-    Audit { hits, page_issues, inlinks: ctx.inlinks }
+    Audit {
+        hits,
+        page_issues,
+        inlinks: ctx.inlinks,
+    }
 }
 
 #[cfg(test)]
@@ -484,8 +551,18 @@ mod tests {
 
     #[test]
     fn unreachable_site_scores_zero() {
-        let page = Page { id: 1, url: "https://e.com/".into(), source: Some(Source::Seed), is_internal: true, error: Some("Connection failed: invalid peer certificate".into()), ..Default::default() };
-        let crawl = Crawl { pages: vec![page], ..Default::default() };
+        let page = Page {
+            id: 1,
+            url: "https://e.com/".into(),
+            source: Some(Source::Seed),
+            is_internal: true,
+            error: Some("Connection failed: invalid peer certificate".into()),
+            ..Default::default()
+        };
+        let crawl = Crawl {
+            pages: vec![page],
+            ..Default::default()
+        };
         assert_eq!(run(&crawl).health_score(&crawl), 0);
     }
 }

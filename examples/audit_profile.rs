@@ -9,10 +9,16 @@ use shouting_toad::model::Crawl;
 use std::time::Instant;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: audit_profile <crawl.shoutingtoad>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: audit_profile <crawl.shoutingtoad>");
     let t = Instant::now();
     let crawl = Crawl::load(std::path::Path::new(&path)).expect("load");
-    println!("load: {:.2}s ({} pages)", t.elapsed().as_secs_f32(), crawl.pages.len());
+    println!(
+        "load: {:.2}s ({} pages)",
+        t.elapsed().as_secs_f32(),
+        crawl.pages.len()
+    );
 
     let t = Instant::now();
     let ctx = Ctx::new(&crawl);
@@ -36,5 +42,9 @@ fn main() {
 
     let t = Instant::now();
     let a = audit::run(&crawl);
-    println!("audit::run (parallel): {:.2}s, {} checks triggered", t.elapsed().as_secs_f32(), a.triggered().count());
+    println!(
+        "audit::run (parallel): {:.2}s, {} checks triggered",
+        t.elapsed().as_secs_f32(),
+        a.triggered().count()
+    );
 }

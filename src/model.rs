@@ -227,8 +227,13 @@ impl Page {
 
     pub fn kind(&self) -> &'static str {
         let ct = self.content_type.as_bytes();
-        let has = |needle: &str| ct.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()));
-        let starts = |prefix: &str| ct.len() >= prefix.len() && ct[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+        let has = |needle: &str| {
+            ct.windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+        };
+        let starts = |prefix: &str| {
+            ct.len() >= prefix.len() && ct[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        };
         if self.html.is_some() || has("html") {
             "HTML"
         } else if has("javascript") || has("ecmascript") {
@@ -251,19 +256,35 @@ impl Page {
     }
 
     pub fn title(&self) -> &str {
-        self.html.as_ref().and_then(|h| h.titles.first()).map(|s| s.as_str()).unwrap_or("")
+        self.html
+            .as_ref()
+            .and_then(|h| h.titles.first())
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     pub fn description(&self) -> &str {
-        self.html.as_ref().and_then(|h| h.meta_descriptions.first()).map(|s| s.as_str()).unwrap_or("")
+        self.html
+            .as_ref()
+            .and_then(|h| h.meta_descriptions.first())
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     pub fn h1(&self) -> &str {
-        self.html.as_ref().and_then(|h| h.h1.first()).map(|s| s.as_str()).unwrap_or("")
+        self.html
+            .as_ref()
+            .and_then(|h| h.h1.first())
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     pub fn canonical(&self) -> &str {
-        self.html.as_ref().and_then(|h| h.canonicals.first()).map(|s| s.as_str()).unwrap_or("")
+        self.html
+            .as_ref()
+            .and_then(|h| h.canonicals.first())
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     pub fn word_count(&self) -> usize {
@@ -284,14 +305,24 @@ impl Page {
     /// Directive names, with any user-agent prefix ("googlebot: noindex") removed and
     /// valued directives ("max-image-preview:none") reduced to their name.
     pub fn directive_names(&self) -> Vec<String> {
-        self.robots_directives().split([',', ';']).map(directive_name).collect()
+        self.robots_directives()
+            .split([',', ';'])
+            .map(directive_name)
+            .collect()
     }
 
     /// `d` must be lower-case. Allocation-free: this runs for every page in many checks.
     pub fn has_directive(&self, d: &str) -> bool {
-        let meta = self.html.iter().flat_map(|h| h.meta_robots.iter().chain(&h.meta_googlebot).map(|s| s.as_str()));
-        meta.chain(self.headers_all("x-robots-tag"))
-            .any(|part| part.split([',', ';']).any(|t| directive_key(t).eq_ignore_ascii_case(d)))
+        let meta = self.html.iter().flat_map(|h| {
+            h.meta_robots
+                .iter()
+                .chain(&h.meta_googlebot)
+                .map(|s| s.as_str())
+        });
+        meta.chain(self.headers_all("x-robots-tag")).any(|part| {
+            part.split([',', ';'])
+                .any(|t| directive_key(t).eq_ignore_ascii_case(d))
+        })
     }
 
     pub fn is_noindex(&self) -> bool {
@@ -311,7 +342,12 @@ pub fn directive_name(token: &str) -> String {
 
 /// Borrowing form of [`directive_name`] (case preserved).
 pub fn directive_key(token: &str) -> &str {
-    const VALUED: &[&str] = &["max-snippet", "max-image-preview", "max-video-preview", "unavailable_after"];
+    const VALUED: &[&str] = &[
+        "max-snippet",
+        "max-image-preview",
+        "max-video-preview",
+        "unavailable_after",
+    ];
     let valued = |k: &str| VALUED.iter().any(|v| v.eq_ignore_ascii_case(k.trim()));
     match token.split_once(':') {
         Some((k, _)) if valued(k) => k.trim(),
@@ -389,15 +425,29 @@ impl Crawl {
             site: &'a SiteInfo,
         }
         // exhaustive on purpose: a new Crawl field must be added to Head too
-        let Crawl { start_url, started, finished, pages, site } = self;
+        let Crawl {
+            start_url,
+            started,
+            finished,
+            pages,
+            site,
+        } = self;
         let gz = gzip_member;
         let write = || -> std::io::Result<()> {
             let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
-            let mut head = serde_json::to_vec(&Head { start_url, started, finished, site })?;
+            let mut head = serde_json::to_vec(&Head {
+                start_url,
+                started,
+                finished,
+                site,
+            })?;
             head.pop(); // closing brace: the pages follow
             head.extend_from_slice(br#","pages":["#);
             file.write_all(&gz(&head)?)?;
-            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .clamp(1, 16);
             let chunks: Vec<&[Page]> = pages.chunks(256).collect();
             for (w, wave) in chunks.chunks(threads).enumerate() {
                 let parts: Vec<std::io::Result<Vec<u8>>> = std::thread::scope(|s| {
@@ -417,7 +467,14 @@ impl Crawl {
                             })
                         })
                         .collect();
-                    running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(std::io::Error::other("serializer crashed")))).collect()
+                    running
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(std::io::Error::other("serializer crashed"))
+                            })
+                        })
+                        .collect()
                 });
                 for part in parts {
                     file.write_all(&part?)?;
@@ -434,17 +491,25 @@ impl Crawl {
     pub fn load(path: &std::path::Path) -> Result<Crawl, String> {
         use std::io::Read;
         let damaged = |e: &dyn std::fmt::Display| format!("{} is damaged: {e}", path.display());
-        let not_crawl = |e: serde_json::Error| format!("{} is not a ShoutingToad crawl file: {e}", path.display());
-        let mut data = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        let not_crawl = |e: serde_json::Error| {
+            format!("{} is not a ShoutingToad crawl file: {e}", path.display())
+        };
+        let mut data =
+            std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
         if let Some(members) = split_members(&data).filter(|m| m.len() >= 2) {
             let inflate = |m: &[u8]| -> Result<Vec<u8>, String> {
                 let mut out = Vec::new();
-                flate2::read::GzDecoder::new(m).read_to_end(&mut out).map_err(|e| damaged(&e))?;
+                flate2::read::GzDecoder::new(m)
+                    .read_to_end(&mut out)
+                    .map_err(|e| damaged(&e))?;
                 Ok(out)
             };
             let (head, rest) = members.split_first().unwrap_or((&members[0], &[]));
             let (tail, chunks) = rest.split_last().unwrap_or((&members[0], &[]));
-            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .clamp(1, 16);
             let parsed: Vec<Result<Vec<Page>, String>> = std::thread::scope(|s| {
                 let running: Vec<_> = chunks
                     .chunks(chunks.len().div_ceil(threads).max(1))
@@ -459,13 +524,19 @@ impl Crawl {
                                     _ => json.insert(0, b'['),
                                 }
                                 json.push(b']');
-                                pages.extend(serde_json::from_slice::<Vec<Page>>(&json).map_err(not_crawl)?);
+                                pages.extend(
+                                    serde_json::from_slice::<Vec<Page>>(&json)
+                                        .map_err(not_crawl)?,
+                                );
                             }
                             Ok(pages)
                         })
                     })
                     .collect();
-                running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(damaged(&"parser crashed")))).collect()
+                running
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|_| Err(damaged(&"parser crashed"))))
+                    .collect()
             });
             let mut json = inflate(head)?;
             json.extend(inflate(tail)?);
@@ -477,7 +548,9 @@ impl Crawl {
         }
         if data.starts_with(&[0x1f, 0x8b]) {
             let mut json = Vec::with_capacity(data.len() * 6);
-            flate2::read::MultiGzDecoder::new(&data[..]).read_to_end(&mut json).map_err(|e| damaged(&e))?;
+            flate2::read::MultiGzDecoder::new(&data[..])
+                .read_to_end(&mut json)
+                .map_err(|e| damaged(&e))?;
             data = json;
         }
         serde_json::from_slice(&data).map_err(not_crawl)
@@ -488,7 +561,10 @@ impl Crawl {
 /// loader can find every member without inflating. Members over 4 GiB get a plain header.
 fn gzip_member(data: &[u8]) -> std::io::Result<Vec<u8>> {
     use std::io::Write;
-    let mut deflate = flate2::write::DeflateEncoder::new(Vec::with_capacity(data.len() / 3), flate2::Compression::fast());
+    let mut deflate = flate2::write::DeflateEncoder::new(
+        Vec::with_capacity(data.len() / 3),
+        flate2::Compression::fast(),
+    );
     deflate.write_all(data)?;
     let body = deflate.finish()?;
     let mut crc = flate2::Crc::new();
@@ -498,7 +574,9 @@ fn gzip_member(data: &[u8]) -> std::io::Result<Vec<u8>> {
     match u32::try_from(total) {
         // ID1 ID2 CM=deflate FLG=FEXTRA MTIME(4) XFL OS=unknown, XLEN=8, "ST" LEN=4 total
         Ok(t) => {
-            out.extend_from_slice(&[0x1f, 0x8b, 8, 4, 0, 0, 0, 0, 0, 0xff, 8, 0, b'S', b'T', 4, 0]);
+            out.extend_from_slice(&[
+                0x1f, 0x8b, 8, 4, 0, 0, 0, 0, 0, 0xff, 8, 0, b'S', b'T', 4, 0,
+            ]);
             out.extend_from_slice(&t.to_le_bytes());
         }
         Err(_) => out.extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]),
@@ -534,11 +612,30 @@ mod tests {
 
     #[test]
     fn save_load_round_trip_and_plain_json() {
-        let link = Link { url: "https://a.test/x".into(), nofollow: true, ..Default::default() };
-        let page = Page { url: "https://a.test/".into(), html: Some(Box::new(HtmlData { links: vec![link], ..Default::default() })), ..Default::default() };
+        let link = Link {
+            url: "https://a.test/x".into(),
+            nofollow: true,
+            ..Default::default()
+        };
+        let page = Page {
+            url: "https://a.test/".into(),
+            html: Some(Box::new(HtmlData {
+                links: vec![link],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
         let mut pages = vec![page];
-        pages.extend((1..5000).map(|id| Page { id, url: format!("https://a.test/{id}"), ..Default::default() }));
-        let crawl = Crawl { start_url: "https://a.test/".into(), pages, ..Default::default() };
+        pages.extend((1..5000).map(|id| Page {
+            id,
+            url: format!("https://a.test/{id}"),
+            ..Default::default()
+        }));
+        let crawl = Crawl {
+            start_url: "https://a.test/".into(),
+            pages,
+            ..Default::default()
+        };
         let dir = std::env::temp_dir().join(format!("st-model-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (gz, plain) = (dir.join("c.shoutingtoad"), dir.join("old.shoutingtoad"));
@@ -549,7 +646,9 @@ mod tests {
             let l = &back.pages[0].html.as_ref().unwrap().links[0];
             assert!(l.nofollow && !l.sponsored && l.fragment.is_none());
             assert_eq!(back.start_url, crawl.start_url);
-            assert!(back.pages.iter().enumerate().all(|(i, p)| p.id == i) && back.pages.len() == 5000);
+            assert!(
+                back.pages.iter().enumerate().all(|(i, p)| p.id == i) && back.pages.len() == 5000
+            );
         }
         // a truncated or foreign file is an error, not a panic
         let bytes = std::fs::read(&gz).unwrap();
@@ -566,7 +665,13 @@ mod directive_tests {
     use super::*;
 
     fn page(robots: &str) -> Page {
-        Page { html: Some(Box::new(HtmlData { meta_robots: vec![robots.into()], ..Default::default() })), ..Default::default() }
+        Page {
+            html: Some(Box::new(HtmlData {
+                meta_robots: vec![robots.into()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
     }
 
     #[test]

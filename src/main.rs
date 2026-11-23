@@ -43,10 +43,21 @@ fn main() {
     if let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon_64.png")) {
         let rgba = img.to_rgba8();
         let (width, height) = (rgba.width(), rgba.height());
-        viewport = viewport.with_icon(egui::IconData { rgba: rgba.into_raw(), width, height });
+        viewport = viewport.with_icon(egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        });
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
-    if let Err(e) = eframe::run_native("ShoutingToad", options, Box::new(move |cc| Ok(Box::new(App::new(cc, screenshot, open))))) {
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    if let Err(e) = eframe::run_native(
+        "ShoutingToad",
+        options,
+        Box::new(move |cc| Ok(Box::new(App::new(cc, screenshot, open)))),
+    ) {
         eprintln!("Could not start the window: {e}");
         std::process::exit(1);
     }

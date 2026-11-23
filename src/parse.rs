@@ -24,13 +24,18 @@ pub fn decode_body(bytes: &[u8], content_type: &str) -> String {
 fn charset_from_content_type(ct: &str) -> Option<String> {
     ct.split(';')
         .map(|p| p.trim())
-        .find_map(|p| p.strip_prefix("charset=").or_else(|| p.strip_prefix("Charset=")))
+        .find_map(|p| {
+            p.strip_prefix("charset=")
+                .or_else(|| p.strip_prefix("Charset="))
+        })
         .map(|c| c.trim_matches(['"', '\'']).to_string())
 }
 
 fn sniff_meta_charset(bytes: &[u8]) -> Option<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r#"(?i)<meta[^>]+charset\s*=\s*["']?([a-zA-Z0-9_\-]+)"#).unwrap());
+    let re = RE.get_or_init(|| {
+        Regex::new(r#"(?i)<meta[^>]+charset\s*=\s*["']?([a-zA-Z0-9_\-]+)"#).unwrap()
+    });
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]);
     re.captures(&head).map(|c| c[1].to_string())
 }
@@ -41,7 +46,12 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        match (b[i], b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+        match (
+            b[i],
+            b.get(i + 1..i + 3)
+                .and_then(|h| std::str::from_utf8(h).ok())
+                .and_then(|h| u8::from_str_radix(h, 16).ok()),
+        ) {
             (b'%', Some(v)) => {
                 out.push(v);
                 i += 3;
@@ -73,7 +83,11 @@ fn rel_tokens(el: &ElementRef) -> Vec<String> {
 }
 
 fn attr_lower(el: &ElementRef, name: &str) -> String {
-    el.value().attr(name).unwrap_or("").trim().to_ascii_lowercase()
+    el.value()
+        .attr(name)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn has_ancestor(el: &ElementRef, name: &str) -> bool {
@@ -82,9 +96,46 @@ fn has_ancestor(el: &ElementRef, name: &str) -> bool {
 }
 
 const BLOCKS: &[&str] = &[
-    "p", "div", "li", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th", "tr", "table",
-    "section", "article", "aside", "header", "footer", "nav", "main", "blockquote", "figcaption", "figure", "pre",
-    "form", "fieldset", "details", "summary", "address", "caption", "option", "button", "label", "br", "hr",
+    "p",
+    "div",
+    "li",
+    "ul",
+    "ol",
+    "dl",
+    "dt",
+    "dd",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "td",
+    "th",
+    "tr",
+    "table",
+    "section",
+    "article",
+    "aside",
+    "header",
+    "footer",
+    "nav",
+    "main",
+    "blockquote",
+    "figcaption",
+    "figure",
+    "pre",
+    "form",
+    "fieldset",
+    "details",
+    "summary",
+    "address",
+    "caption",
+    "option",
+    "button",
+    "label",
+    "br",
+    "hr",
 ];
 
 /// Visible text below `el`, skipping non-rendered subtrees. Block boundaries become newlines so
@@ -104,7 +155,8 @@ fn visible_text(el: ElementRef, out: &mut String) {
             out.push(' ');
         } else if let Some(ch) = ElementRef::wrap(child) {
             match ch.value().name() {
-                "script" | "style" | "noscript" | "template" | "svg" | "head" | "iframe" | "object" => {}
+                "script" | "style" | "noscript" | "template" | "svg" | "head" | "iframe"
+                | "object" => {}
                 n => {
                     let block = BLOCKS.contains(&n);
                     if block {
@@ -120,8 +172,16 @@ fn visible_text(el: ElementRef, out: &mut String) {
 /// Sentences: `.!?`-separated runs of 2+ words, and every text block counts as at least one.
 fn count_sentences(text: &str) -> usize {
     text.split('\n')
-        .filter(|b| b.split_whitespace().any(|w| w.chars().any(|c| c.is_alphanumeric())))
-        .map(|b| b.split(['.', '!', '?']).filter(|s| s.split_whitespace().count() >= 2).count().max(1))
+        .filter(|b| {
+            b.split_whitespace()
+                .any(|w| w.chars().any(|c| c.is_alphanumeric()))
+        })
+        .map(|b| {
+            b.split(['.', '!', '?'])
+                .filter(|s| s.split_whitespace().count() >= 2)
+                .count()
+                .max(1)
+        })
         .sum()
 }
 
@@ -134,22 +194,40 @@ const MAX_DEPTH: usize = 512;
 /// (p, li, td, a…), are not tracked; an end tag pops back to its matching start tag.
 fn cap_nesting(raw: &str) -> Cow<'_, str> {
     const UNTRACKED: &[&str] = &[
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
-        "keygen", "basefont", "bgsound", "frame", "image", "html", "head", "body", "p", "li", "dt", "dd", "tr", "td",
-        "th", "tbody", "thead", "tfoot", "colgroup", "caption", "option", "optgroup", "rb", "rt", "rp", "a", "nobr",
-        "button", "form",
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr", "keygen", "basefont", "bgsound", "frame", "image", "html",
+        "head", "body", "p", "li", "dt", "dd", "tr", "td", "th", "tbody", "thead", "tfoot",
+        "colgroup", "caption", "option", "optgroup", "rb", "rt", "rp", "a", "nobr", "button",
+        "form",
     ];
-    const RAW_TEXT: &[&str] = &["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "plaintext"];
+    const RAW_TEXT: &[&str] = &[
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "plaintext",
+    ];
     let has = |list: &[&str], name: &str| list.iter().any(|t| t.eq_ignore_ascii_case(name));
     let b = raw.as_bytes();
     let find = |from: usize, needle: &[u8]| -> Option<usize> {
-        b.get(from..)?.windows(needle.len()).position(|w| w.eq_ignore_ascii_case(needle)).map(|p| from + p)
+        b.get(from..)?
+            .windows(needle.len())
+            .position(|w| w.eq_ignore_ascii_case(needle))
+            .map(|p| from + p)
     };
     let mut stack: Vec<&str> = Vec::new();
     let mut out: Option<String> = None;
     let mut copied = 0;
     let mut i = 0;
-    while let Some(start) = b.get(i..).and_then(|rest| rest.iter().position(|&c| c == b'<')).map(|p| i + p) {
+    while let Some(start) = b
+        .get(i..)
+        .and_then(|rest| rest.iter().position(|&c| c == b'<'))
+        .map(|p| i + p)
+    {
         i = start + 1;
         if b[i..].starts_with(b"!--") {
             i = find(i, b"-->").map_or(b.len(), |p| p + 3);
@@ -157,7 +235,11 @@ fn cap_nesting(raw: &str) -> Cow<'_, str> {
         }
         let closing = b.get(i) == Some(&b'/');
         let ns = i + closing as usize;
-        let ne = ns + b[ns.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'-').count();
+        let ne = ns
+            + b[ns.min(b.len())..]
+                .iter()
+                .take_while(|c| c.is_ascii_alphanumeric() || **c == b'-')
+                .count();
         if ne == ns || !b[ns].is_ascii_alphabetic() {
             continue;
         }
@@ -214,7 +296,16 @@ pub fn simhash(words: &[String]) -> u64 {
     let mut votes = [0i32; 64];
     for w in words.windows(3) {
         // fnv64 of "w0 w1 w2" without building the string
-        let h = fnv64_continue(fnv64_continue(fnv64_continue(fnv64_continue(fnv64_continue(FNV_OFFSET, w[0].as_bytes()), b" "), w[1].as_bytes()), b" "), w[2].as_bytes());
+        let h = fnv64_continue(
+            fnv64_continue(
+                fnv64_continue(
+                    fnv64_continue(fnv64_continue(FNV_OFFSET, w[0].as_bytes()), b" "),
+                    w[1].as_bytes(),
+                ),
+                b" ",
+            ),
+            w[2].as_bytes(),
+        );
         for (bit, v) in votes.iter_mut().enumerate() {
             if h >> bit & 1 == 1 {
                 *v += 1
@@ -223,16 +314,20 @@ pub fn simhash(words: &[String]) -> u64 {
             }
         }
     }
-    votes
-        .iter()
-        .enumerate()
-        .fold(0u64, |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc })
+    votes.iter().enumerate().fold(
+        0u64,
+        |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc },
+    )
 }
 
 /// Vowel groups over the ASCII letters of `word` (allocation-free: runs for every word).
 fn syllables(word: &str) -> usize {
     let (mut count, mut prev, mut len, mut last, mut before_last) = (0, false, 0, 0u8, 0u8);
-    for c in word.bytes().filter(|b| b.is_ascii_alphabetic()).map(|b| b.to_ascii_lowercase()) {
+    for c in word
+        .bytes()
+        .filter(|b| b.is_ascii_alphabetic())
+        .map(|b| b.to_ascii_lowercase())
+    {
         let v = b"aeiouy".contains(&c);
         if v && !prev {
             count += 1;
@@ -264,29 +359,45 @@ pub fn flesch(words: &[String], sentences: usize) -> f32 {
 }
 
 const GENERIC_ANCHORS: &[&str] = &[
-    "click here", "here", "read more", "more", "learn more", "this link", "link", "click", "go", "this page",
-    "more info", "details", "continue",
+    "click here",
+    "here",
+    "read more",
+    "more",
+    "learn more",
+    "this link",
+    "link",
+    "click",
+    "go",
+    "this page",
+    "more info",
+    "details",
+    "continue",
 ];
 
 const DEPRECATED: &[&str] = &[
-    "center", "font", "marquee", "blink", "big", "strike", "tt", "acronym", "applet", "basefont", "dir", "isindex",
-    "frame", "frameset", "noframes",
+    "center", "font", "marquee", "blink", "big", "strike", "tt", "acronym", "applet", "basefont",
+    "dir", "isindex", "frame", "frameset", "noframes",
 ];
 
-const HEAD_ALLOWED: &[&str] = &["title", "meta", "link", "script", "style", "base", "noscript", "template", "head"];
+const HEAD_ALLOWED: &[&str] = &[
+    "title", "meta", "link", "script", "style", "base", "noscript", "template", "head",
+];
 
 pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     static RE_STRIP: OnceLock<Regex> = OnceLock::new();
     static RE_TAG: OnceLock<Regex> = OnceLock::new();
     static RE_JS_REDIRECT: OnceLock<Regex> = OnceLock::new();
     static RE_FONT_FACE: OnceLock<Regex> = OnceLock::new();
-    let re_strip = RE_STRIP.get_or_init(|| Regex::new(r"(?is)<!--.*?-->|<script\b.*?</script>|<style\b.*?</style>").unwrap());
+    let re_strip = RE_STRIP.get_or_init(|| {
+        Regex::new(r"(?is)<!--.*?-->|<script\b.*?</script>|<style\b.*?</style>").unwrap()
+    });
     let re_tag = RE_TAG.get_or_init(|| Regex::new(r"(?i)<([a-z][a-z0-9-]*)").unwrap());
     let re_js_redirect = RE_JS_REDIRECT.get_or_init(|| {
         // The object prefix is optional: a bare `location.href = …` redirects too.
         Regex::new(r"(?:^|[^\w$.]|(?:window|document|top|self)\.)location(?:\.href)?\s*=[^=]|location\.(?:replace|assign)\s*\(").unwrap()
     });
-    let re_font_face = RE_FONT_FACE.get_or_init(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
+    let re_font_face =
+        RE_FONT_FACE.get_or_init(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
 
     let mut d = HtmlData::default();
     let doc = Html::parse_document(&cap_nesting(raw));
@@ -294,9 +405,19 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     // ---- raw-markup structure checks
     let stripped = re_strip.replace_all(raw, "");
     let lower = stripped.to_ascii_lowercase();
-    d.has_doctype = raw.trim_start_matches('\u{feff}').trim_start().get(..9).is_some_and(|s| s.eq_ignore_ascii_case("<!doctype"));
-    d.head_tags = re_tag.captures_iter(&lower).filter(|c| &c[1] == "head").count();
-    d.body_tags = re_tag.captures_iter(&lower).filter(|c| &c[1] == "body").count();
+    d.has_doctype = raw
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .get(..9)
+        .is_some_and(|s| s.eq_ignore_ascii_case("<!doctype"));
+    d.head_tags = re_tag
+        .captures_iter(&lower)
+        .filter(|c| &c[1] == "head")
+        .count();
+    d.body_tags = re_tag
+        .captures_iter(&lower)
+        .filter(|c| &c[1] == "body")
+        .count();
     if let (Some(start), Some(end)) = (lower.find("<head"), lower.find("</head>")) {
         if start < end {
             let mut bad: Vec<String> = re_tag
@@ -312,7 +433,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
 
     // ---- base href first so every URL resolves correctly
     let mut base = page_url.clone();
-    for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
+    for el in doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+    {
         if el.value().name() == "base" {
             if let Some(h) = el.value().attr("href") {
                 d.base_href = Some(h.to_string());
@@ -334,7 +459,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
 
     // label[for] targets, for form accessibility
     let mut label_for: HashSet<String> = HashSet::new();
-    for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
+    for el in doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+    {
         if el.value().name() == "label" {
             if let Some(f) = el.value().attr("for") {
                 label_for.insert(f.to_string());
@@ -344,7 +473,12 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
 
     // Elements inside <head>, found once instead of walking every element's ancestors.
     let mut in_head_ids = HashSet::new();
-    for head in doc.root_element().descendants().filter_map(ElementRef::wrap).filter(|e| e.value().name() == "head") {
+    for head in doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+        .filter(|e| e.value().name() == "head")
+    {
         in_head_ids.extend(head.descendants().skip(1).map(|n| n.id()));
     }
 
@@ -352,7 +486,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     let mut anchor_names: HashSet<String> = HashSet::new();
     let mut deprecated: HashSet<String> = HashSet::new();
 
-    for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
+    for el in doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+    {
         d.dom_elements += 1;
         let name = el.value().name();
         let in_head = in_head_ids.contains(&el.id());
@@ -428,7 +566,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                     }
                     "googlebot" => d.meta_googlebot.push(content.clone()),
                     "viewport" => d.viewport = Some(content.clone()),
-                    n if n.starts_with("twitter:") => d.twitter.push((n.to_string(), content.clone())),
+                    n if n.starts_with("twitter:") => {
+                        d.twitter.push((n.to_string(), content.clone()))
+                    }
                     _ => {}
                 }
                 if prop.starts_with("og:") {
@@ -462,7 +602,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 }
                 if has("alternate") {
                     if let Some(lang) = el.value().attr("hreflang") {
-                        let u = resolve(href).map(|u| u.to_string()).unwrap_or_else(|| href.to_string());
+                        let u = resolve(href)
+                            .map(|u| u.to_string())
+                            .unwrap_or_else(|| href.to_string());
                         d.hreflang.push((lang.trim().to_string(), u));
                         if !in_head {
                             d.hreflang_outside_head = true;
@@ -517,7 +659,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 }
             }
             "a" | "area" => {
-                let Some(raw_href) = el.value().attr("href") else { continue };
+                let Some(raw_href) = el.value().attr("href") else {
+                    continue;
+                };
                 let href_trim = raw_href.trim();
                 let lower_href = href_trim.to_ascii_lowercase();
                 if lower_href.starts_with("javascript:") {
@@ -536,11 +680,16 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 if raw_href != href_trim || href_trim.contains(char::is_whitespace) {
                     d.links_with_whitespace += 1;
                 }
-                let Ok(mut full) = base.join(href_trim) else { continue };
+                let Ok(mut full) = base.join(href_trim) else {
+                    continue;
+                };
                 if full.scheme() != "http" && full.scheme() != "https" {
                     continue;
                 }
-                let fragment = full.fragment().filter(|f| !f.is_empty()).map(percent_decode);
+                let fragment = full
+                    .fragment()
+                    .filter(|f| !f.is_empty())
+                    .map(percent_decode);
                 full.set_fragment(None);
 
                 let mut anchor = text_of(el);
@@ -585,16 +734,26 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 });
             }
             "img" => {
-                let src = el.value().attr("src").filter(|s| !s.trim().is_empty() && !s.trim().starts_with("data:"));
-                let lazy_src = el.value().attr("data-src").or(el.value().attr("data-lazy-src"));
-                let Some(u) = src.or(lazy_src).and_then(resolve) else { continue };
+                let src = el
+                    .value()
+                    .attr("src")
+                    .filter(|s| !s.trim().is_empty() && !s.trim().starts_with("data:"));
+                let lazy_src = el
+                    .value()
+                    .attr("data-src")
+                    .or(el.value().attr("data-lazy-src"));
+                let Some(u) = src.or(lazy_src).and_then(resolve) else {
+                    continue;
+                };
                 d.images.push(Image {
                     url: u.to_string(),
                     alt: el.value().attr("alt").map(norm),
                     has_width: el.value().attr("width").is_some(),
                     has_height: el.value().attr("height").is_some(),
-                    lazy: attr_lower(&el, "loading") == "lazy" || (src.is_none() && lazy_src.is_some()),
-                    srcset: el.value().attr("srcset").is_some() || el.value().attr("data-srcset").is_some(),
+                    lazy: attr_lower(&el, "loading") == "lazy"
+                        || (src.is_none() && lazy_src.is_some()),
+                    srcset: el.value().attr("srcset").is_some()
+                        || el.value().attr("data-srcset").is_some(),
                 });
             }
             "script" => {
@@ -633,9 +792,16 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 // Only fonts fetched over the network need font-display; local() and
                 // inline data: fonts are available without a download.
                 let web_font = |f: &str| {
-                    f.split("url(").skip(1).any(|u| !u.trim_start().trim_start_matches(['"', '\'']).starts_with("data:"))
+                    f.split("url(").skip(1).any(|u| {
+                        !u.trim_start()
+                            .trim_start_matches(['"', '\''])
+                            .starts_with("data:")
+                    })
                 };
-                if re_font_face.find_iter(&body).any(|m| web_font(m.as_str()) && !m.as_str().contains("font-display")) {
+                if re_font_face
+                    .find_iter(&body)
+                    .any(|m| web_font(m.as_str()) && !m.as_str().contains("font-display"))
+                {
                     d.font_face_without_display = true;
                 }
             }
@@ -643,8 +809,12 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 if let Some(u) = el.value().attr("src").and_then(resolve) {
                     d.iframes.push(Iframe {
                         url: u.to_string(),
-                        has_title: el.value().attr("title").is_some_and(|t| !t.trim().is_empty()),
-                        has_size: el.value().attr("width").is_some() && el.value().attr("height").is_some(),
+                        has_title: el
+                            .value()
+                            .attr("title")
+                            .is_some_and(|t| !t.trim().is_empty()),
+                        has_size: el.value().attr("width").is_some()
+                            && el.value().attr("height").is_some(),
                     });
                 }
             }
@@ -660,31 +830,51 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                     .descendants()
                     .filter_map(ElementRef::wrap)
                     .any(|e| e.value().name() == "input" && attr_lower(&e, "type") == "password");
-                d.forms.push(Form { action, has_password });
+                d.forms.push(Form {
+                    action,
+                    has_password,
+                });
             }
             "input" | "select" | "textarea" => {
                 let ty = attr_lower(&el, "type");
-                if name == "input" && ["hidden", "submit", "button", "image", "reset"].contains(&ty.as_str()) {
+                if name == "input"
+                    && ["hidden", "submit", "button", "image", "reset"].contains(&ty.as_str())
+                {
                     continue;
                 }
-                let labelled = el.value().attr("id").is_some_and(|id| label_for.contains(id))
+                let labelled = el
+                    .value()
+                    .attr("id")
+                    .is_some_and(|id| label_for.contains(id))
                     || has_ancestor(&el, "label")
-                    || el.value().attr("aria-label").is_some_and(|s| !s.trim().is_empty())
+                    || el
+                        .value()
+                        .attr("aria-label")
+                        .is_some_and(|s| !s.trim().is_empty())
                     || el.value().attr("aria-labelledby").is_some()
-                    || el.value().attr("title").is_some_and(|s| !s.trim().is_empty());
+                    || el
+                        .value()
+                        .attr("title")
+                        .is_some_and(|s| !s.trim().is_empty());
                 if !labelled {
                     d.inputs_without_label += 1;
                 }
             }
             "button" => {
                 let named = !text_of(el).is_empty()
-                    || el.value().attr("aria-label").is_some_and(|s| !s.trim().is_empty())
-                    || el.value().attr("aria-labelledby").is_some()
-                    || el.value().attr("title").is_some_and(|s| !s.trim().is_empty())
                     || el
-                        .descendants()
-                        .filter_map(ElementRef::wrap)
-                        .any(|e| e.value().name() == "img" && e.value().attr("alt").is_some_and(|a| !a.trim().is_empty()));
+                        .value()
+                        .attr("aria-label")
+                        .is_some_and(|s| !s.trim().is_empty())
+                    || el.value().attr("aria-labelledby").is_some()
+                    || el
+                        .value()
+                        .attr("title")
+                        .is_some_and(|s| !s.trim().is_empty())
+                    || el.descendants().filter_map(ElementRef::wrap).any(|e| {
+                        e.value().name() == "img"
+                            && e.value().attr("alt").is_some_and(|a| !a.trim().is_empty())
+                    });
                 if !named {
                     d.buttons_without_name += 1;
                 }
@@ -692,18 +882,23 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
             "main" => d.has_main = true,
             "p" if d.lead.is_empty() => {
                 let t = text_of(el);
-                let chrome = ["nav", "header", "footer", "aside", "form"].iter().any(|n| has_ancestor(&el, n));
+                let chrome = ["nav", "header", "footer", "aside", "form"]
+                    .iter()
+                    .any(|n| has_ancestor(&el, n));
                 if !chrome && t.split_whitespace().count() >= 12 {
                     d.lead = t;
                 }
             }
             "video" | "audio" => {
-                if el.value().attr("autoplay").is_some() && (name == "audio" || el.value().attr("muted").is_none()) {
+                if el.value().attr("autoplay").is_some()
+                    && (name == "audio" || el.value().attr("muted").is_none())
+                {
                     d.autoplay_media = true;
                 }
                 if name == "video" {
                     let captions = el.descendants().filter_map(ElementRef::wrap).any(|e| {
-                        e.value().name() == "track" && matches!(attr_lower(&e, "kind").as_str(), "captions" | "subtitles")
+                        e.value().name() == "track"
+                            && matches!(attr_lower(&e, "kind").as_str(), "captions" | "subtitles")
                     });
                     if !captions {
                         d.videos_without_captions += 1;
@@ -712,7 +907,10 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
             }
             "table" => {
                 let role = attr_lower(&el, "role");
-                let has_th = el.descendants().filter_map(ElementRef::wrap).any(|e| e.value().name() == "th");
+                let has_th = el
+                    .descendants()
+                    .filter_map(ElementRef::wrap)
+                    .any(|e| e.value().name() == "th");
                 if !has_th && role != "presentation" && role != "none" {
                     d.tables_without_headers += 1;
                 }
@@ -721,7 +919,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
             "object" | "embed" | "applet" => d.uses_plugins = true,
             _ => {}
         }
-        if el.value().attr("role").is_some_and(|r| r.eq_ignore_ascii_case("main")) {
+        if el
+            .value()
+            .attr("role")
+            .is_some_and(|r| r.eq_ignore_ascii_case("main"))
+        {
             d.has_main = true;
         }
     }
@@ -738,7 +940,11 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
 
     // ---- visible text, readability, fingerprints
     let mut text = String::new();
-    let body = doc.root_element().children().filter_map(ElementRef::wrap).find(|e| e.value().name() == "body");
+    let body = doc
+        .root_element()
+        .children()
+        .filter_map(ElementRef::wrap)
+        .find(|e| e.value().name() == "body");
     if let Some(body) = body {
         visible_text(body, &mut text);
     }
@@ -756,12 +962,23 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     // Placeholder copy counts only in prose; code samples (docs, tutorials) use it on purpose.
     d.lorem_ipsum = joined.contains("lorem ipsum")
         && body.is_some_and(|b| {
-            b.descendants().filter_map(|n| n.value().as_text().map(|t| (n, t))).any(|(n, t)| {
-                t.to_lowercase().contains("lorem ipsum")
-                    && !n.ancestors().filter_map(|a| a.value().as_element()).any(|e| matches!(e.name(), "pre" | "code" | "samp" | "kbd" | "textarea"))
-            })
+            b.descendants()
+                .filter_map(|n| n.value().as_text().map(|t| (n, t)))
+                .any(|(n, t)| {
+                    t.to_lowercase().contains("lorem ipsum")
+                        && !n
+                            .ancestors()
+                            .filter_map(|a| a.value().as_element())
+                            .any(|e| {
+                                matches!(e.name(), "pre" | "code" | "samp" | "kbd" | "textarea")
+                            })
+                })
         });
-    d.text_ratio = if raw.is_empty() { 0.0 } else { norm(&text).len() as f32 / raw.len() as f32 * 100.0 };
+    d.text_ratio = if raw.is_empty() {
+        0.0
+    } else {
+        norm(&text).len() as f32 / raw.len() as f32 * 100.0
+    };
     let mut capped = norm(&text);
     if capped.len() > TEXT_CAP {
         let mut cut = TEXT_CAP;
@@ -829,8 +1046,12 @@ mod tests {
 
     #[test]
     fn blocks_without_punctuation_count_as_sentences() {
-        let items: String = (0..40).map(|i| format!("<li><a href=\"/p{i}\">Camper van model {i}</a></li>")).collect();
-        let d = parse(&format!("<html><body><ul>{items}</ul><p>One sentence here. And another one!</p></body></html>"));
+        let items: String = (0..40)
+            .map(|i| format!("<li><a href=\"/p{i}\">Camper van model {i}</a></li>"))
+            .collect();
+        let d = parse(&format!(
+            "<html><body><ul>{items}</ul><p>One sentence here. And another one!</p></body></html>"
+        ));
         assert_eq!(d.sentence_count, 42);
         assert!(d.flesch > 30.0, "flesch {}", d.flesch);
     }
@@ -843,7 +1064,9 @@ mod tests {
 
     #[test]
     fn bookmark_targets_include_named_anchors_and_decoded_fragments() {
-        let d = parse(r#"<html><body><a name="legacy"></a><h2 id="café">x</h2><a href="/p#caf%C3%A9">y</a></body></html>"#);
+        let d = parse(
+            r#"<html><body><a name="legacy"></a><h2 id="café">x</h2><a href="/p#caf%C3%A9">y</a></body></html>"#,
+        );
         assert!(d.ids.binary_search(&"legacy".to_string()).is_ok());
         assert_eq!(d.links[0].fragment.as_deref(), Some("café"));
     }
@@ -854,13 +1077,19 @@ mod tests {
         assert!(!local.font_face_without_display);
         let inline = parse("<html><head><style>@font-face{font-family:S;src:url(\"data:font/woff;base64,AAAA\") format('woff')}</style></head></html>");
         assert!(!inline.font_face_without_display);
-        let web = parse("<html><head><style>@font-face{font-family:F;src:url(/f.woff2)}</style></head></html>");
+        let web = parse(
+            "<html><head><style>@font-face{font-family:F;src:url(/f.woff2)}</style></head></html>",
+        );
         assert!(web.font_face_without_display);
     }
 
     #[test]
     fn caps_hostile_nesting() {
-        let deep = format!("<html><body>{}<a href=\"/x\">deep</a>{}</body></html>", "<div>".repeat(100_000), "</div>".repeat(100_000));
+        let deep = format!(
+            "<html><body>{}<a href=\"/x\">deep</a>{}</body></html>",
+            "<div>".repeat(100_000),
+            "</div>".repeat(100_000)
+        );
         assert_eq!(cap_nesting(&deep).matches("<div>").count(), MAX_DEPTH);
         let d = parse(&deep);
         assert_eq!(d.links.len(), 1);
@@ -871,7 +1100,10 @@ mod tests {
 
     #[test]
     fn simhash_and_syllables_match_reference() {
-        let words: Vec<String> = "naïve readable little table the cat sat on a mat".split(' ').map(String::from).collect();
+        let words: Vec<String> = "naïve readable little table the cat sat on a mat"
+            .split(' ')
+            .map(String::from)
+            .collect();
         let mut votes = [0i32; 64];
         for w in words.windows(3) {
             let h = fnv64(w.join(" ").as_bytes());
@@ -879,13 +1111,26 @@ mod tests {
                 *v += if h >> bit & 1 == 1 { 1 } else { -1 };
             }
         }
-        let reference = votes.iter().enumerate().fold(0u64, |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc });
+        let reference =
+            votes.iter().enumerate().fold(
+                0u64,
+                |acc, (bit, v)| if *v > 0 { acc | 1 << bit } else { acc },
+            );
         assert_eq!(simhash(&words), reference);
-        let counts: Vec<usize> = ["table", "little", "the", "make", "naïve", "rhythm", "", "42", "Queue"].iter().map(|w| syllables(w)).collect();
+        let counts: Vec<usize> = [
+            "table", "little", "the", "make", "naïve", "rhythm", "", "42", "Queue",
+        ]
+        .iter()
+        .map(|w| syllables(w))
+        .collect();
         assert_eq!(counts, vec![2, 2, 1, 1, 1, 1, 0, 0, 1]);
         // previous char-vector implementation
         let old = |word: &str| {
-            let w: Vec<char> = word.chars().filter(|c| c.is_ascii_alphabetic()).map(|c| c.to_ascii_lowercase()).collect();
+            let w: Vec<char> = word
+                .chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
             if w.is_empty() {
                 return 0;
             }
@@ -902,7 +1147,10 @@ mod tests {
             }
             count.max(1)
         };
-        for w in "Le le ale idle Apple BEE eye ée crème brûlée x-ray re-use oe aye Yule whole café 3e e".split(' ') {
+        for w in
+            "Le le ale idle Apple BEE eye ée crème brûlée x-ray re-use oe aye Yule whole café 3e e"
+                .split(' ')
+        {
             assert_eq!(syllables(w), old(w), "{w}");
         }
     }

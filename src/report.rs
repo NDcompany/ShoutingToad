@@ -37,7 +37,10 @@ struct Csv<W: io::Write> {
 
 impl<W: io::Write> Csv<W> {
     fn new(w: W, header: &[&str]) -> io::Result<Self> {
-        let mut c = Csv { w, buf: String::new() };
+        let mut c = Csv {
+            w,
+            buf: String::new(),
+        };
         c.w.write_all(row(&header.iter().map(|h| h.to_string()).collect::<Vec<_>>()).as_bytes())?;
         Ok(c)
     }
@@ -76,13 +79,42 @@ pub fn internal_csv(crawl: &Crawl, audit: &Audit) -> String {
 }
 
 pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
-    let mut out = Csv::new(w, &[
-        "Address", "Type", "Status Code", "Status", "Indexability", "Title 1", "Title 1 Length", "Title 1 Pixel Width",
-        "Meta Description 1", "Meta Description 1 Length", "H1-1", "H1 Count", "H2-1", "Canonical", "Meta Robots",
-        "X-Robots-Tag", "Word Count", "Flesch Reading Ease", "Size (Bytes)", "Transferred (Bytes)", "Response Time (ms)",
-        "Crawl Depth", "Inlinks", "Outlinks", "Images", "HTTP Version", "Content Encoding", "Redirect URL", "Issues",
-        "Custom Search Hits", "Custom Extraction",
-    ])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Address",
+            "Type",
+            "Status Code",
+            "Status",
+            "Indexability",
+            "Title 1",
+            "Title 1 Length",
+            "Title 1 Pixel Width",
+            "Meta Description 1",
+            "Meta Description 1 Length",
+            "H1-1",
+            "H1 Count",
+            "H2-1",
+            "Canonical",
+            "Meta Robots",
+            "X-Robots-Tag",
+            "Word Count",
+            "Flesch Reading Ease",
+            "Size (Bytes)",
+            "Transferred (Bytes)",
+            "Response Time (ms)",
+            "Crawl Depth",
+            "Inlinks",
+            "Outlinks",
+            "Images",
+            "HTTP Version",
+            "Content Encoding",
+            "Redirect URL",
+            "Issues",
+            "Custom Search Hits",
+            "Custom Extraction",
+        ],
+    )?;
     for (i, p) in crawl.pages.iter().enumerate() {
         let h = p.html.as_deref();
         out.row(&[
@@ -98,7 +130,9 @@ pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::
             &p.description().chars().count(),
             &p.h1(),
             &h.map(|h| h.h1.len()).unwrap_or(0),
-            &h.and_then(|h| h.h2.first()).map(|s| s.as_str()).unwrap_or(""),
+            &h.and_then(|h| h.h2.first())
+                .map(|s| s.as_str())
+                .unwrap_or(""),
             &p.canonical(),
             &h.map(|h| h.meta_robots.join("; ")).unwrap_or_default(),
             &p.headers_all("x-robots-tag").collect::<Vec<_>>().join("; "),
@@ -124,14 +158,31 @@ pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::
 
 pub fn issues_csv(crawl: &Crawl, audit: &Audit) -> String {
     let cat = catalogue();
-    let mut out = row(&cells!["Issue ID", "Category", "Issue", "Type", "Priority", "URLs", "% of Internal HTML", "Description", "How To Fix"]);
+    let mut out = row(&cells![
+        "Issue ID",
+        "Category",
+        "Issue",
+        "Type",
+        "Priority",
+        "URLs",
+        "% of Internal HTML",
+        "Description",
+        "How To Fix"
+    ]);
     let mut list: Vec<(usize, &Vec<usize>)> = audit.triggered().collect();
     list.sort_by_key(|(i, h)| (cat[*i].kind, cat[*i].priority, std::cmp::Reverse(h.len())));
     for (i, hits) in list {
         let c = &cat[i];
         out.push_str(&row(&cells![
-            c.id, c.category, c.name, c.kind.label(), c.priority.label(), hits.len(),
-            format!("{:.1}", hit_share(crawl, hits)), c.description, c.fix
+            c.id,
+            c.category,
+            c.name,
+            c.kind.label(),
+            c.priority.label(),
+            hits.len(),
+            format!("{:.1}", hit_share(crawl, hits)),
+            c.description,
+            c.fix
         ]));
     }
     out
@@ -143,20 +194,48 @@ pub fn issue_urls_csv(crawl: &Crawl, audit: &Audit) -> String {
 
 pub fn issue_urls_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
     let cat = catalogue();
-    let mut out = Csv::new(w, &["Issue ID", "Category", "Issue", "Type", "Priority", "Address"])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Issue ID", "Category", "Issue", "Type", "Priority", "Address",
+        ],
+    )?;
     for (i, hits) in audit.triggered() {
         let c = &cat[i];
         for &pi in hits {
-            out.row(&[&c.id, &c.category, &c.name, &c.kind.label(), &c.priority.label(), &crawl.pages[pi].url])?;
+            out.row(&[
+                &c.id,
+                &c.category,
+                &c.name,
+                &c.kind.label(),
+                &c.priority.label(),
+                &crawl.pages[pi].url,
+            ])?;
         }
     }
     out.finish()
 }
 
 pub fn checks_csv() -> String {
-    let mut out = row(&cells!["Issue ID", "Category", "Issue", "Type", "Priority", "Description", "How To Fix"]);
+    let mut out = row(&cells![
+        "Issue ID",
+        "Category",
+        "Issue",
+        "Type",
+        "Priority",
+        "Description",
+        "How To Fix"
+    ]);
     for c in catalogue() {
-        out.push_str(&row(&cells![c.id, c.category, c.name, c.kind.label(), c.priority.label(), c.description, c.fix]));
+        out.push_str(&row(&cells![
+            c.id,
+            c.category,
+            c.name,
+            c.kind.label(),
+            c.priority.label(),
+            c.description,
+            c.fix
+        ]));
     }
     out
 }
@@ -166,13 +245,34 @@ pub fn inlinks_csv(crawl: &Crawl, audit: &Audit) -> String {
 }
 
 pub fn inlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
-    let mut out = Csv::new(w, &["Destination", "Destination Status", "Source", "Anchor Text", "Follow", "Rel"])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Destination",
+            "Destination Status",
+            "Source",
+            "Anchor Text",
+            "Follow",
+            "Rel",
+        ],
+    )?;
     for (ti, ins) in audit.inlinks.iter().enumerate() {
         let Some(t) = crawl.pages.get(ti) else { break };
         for &(si, li) in ins {
-            let Some(src) = crawl.pages.get(si) else { continue };
-            let Some(l) = src.html.as_ref().and_then(|h| h.links.get(li)) else { continue };
-            out.row(&[&t.url, &t.status, &src.url, &l.anchor, &if l.nofollow { "Nofollow" } else { "Follow" }, &rel(l)])?;
+            let Some(src) = crawl.pages.get(si) else {
+                continue;
+            };
+            let Some(l) = src.html.as_ref().and_then(|h| h.links.get(li)) else {
+                continue;
+            };
+            out.row(&[
+                &t.url,
+                &t.status,
+                &src.url,
+                &l.anchor,
+                &if l.nofollow { "Nofollow" } else { "Follow" },
+                &rel(l),
+            ])?;
         }
     }
     out.finish()
@@ -201,7 +301,18 @@ pub fn outlinks_csv(crawl: &Crawl) -> String {
 
 pub fn outlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
     let ctx = crate::audit::Ctx::urls_only(crawl);
-    let mut out = Csv::new(w, &["Source", "Destination", "Destination Status", "Anchor Text", "Type", "Follow", "Rel"])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Source",
+            "Destination",
+            "Destination Status",
+            "Anchor Text",
+            "Type",
+            "Follow",
+            "Rel",
+        ],
+    )?;
     for p in &crawl.pages {
         let Some(h) = &p.html else { continue };
         for l in &h.links {
@@ -209,8 +320,13 @@ pub fn outlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
             let status = dest.map(|d| d.status.to_string()).unwrap_or_default();
             let internal = dest.map(|d| d.is_internal).unwrap_or(false);
             out.row(&[
-                &p.url, &l.url, &status, &l.anchor, &if internal { "Internal" } else { "External" },
-                &if l.nofollow { "Nofollow" } else { "Follow" }, &rel(l),
+                &p.url,
+                &l.url,
+                &status,
+                &l.anchor,
+                &if internal { "Internal" } else { "External" },
+                &if l.nofollow { "Nofollow" } else { "Follow" },
+                &rel(l),
             ])?;
         }
     }
@@ -223,14 +339,35 @@ pub fn images_csv(crawl: &Crawl) -> String {
 
 pub fn images_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
     let ctx = crate::audit::Ctx::urls_only(crawl);
-    let mut out = Csv::new(w, &["Page", "Image", "Alt Text", "Alt Attribute", "Width & Height Set", "Lazy", "Image Status", "Image Size (Bytes)", "Content Type"])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Page",
+            "Image",
+            "Alt Text",
+            "Alt Attribute",
+            "Width & Height Set",
+            "Lazy",
+            "Image Status",
+            "Image Size (Bytes)",
+            "Content Type",
+        ],
+    )?;
     for p in &crawl.pages {
         let Some(h) = &p.html else { continue };
         for img in &h.images {
             let t = ctx.page(&img.url);
             out.row(&[
-                &p.url, &img.url, &img.alt.as_deref().unwrap_or(""), &if img.alt.is_some() { "Present" } else { "Missing" },
-                &(img.has_width && img.has_height), &img.lazy,
+                &p.url,
+                &img.url,
+                &img.alt.as_deref().unwrap_or(""),
+                &if img.alt.is_some() {
+                    "Present"
+                } else {
+                    "Missing"
+                },
+                &(img.has_width && img.has_height),
+                &img.lazy,
                 &t.map(|t| t.status.to_string()).unwrap_or_default(),
                 &t.map(|t| t.size.to_string()).unwrap_or_default(),
                 &t.map(|t| t.content_type.as_str()).unwrap_or_default(),
@@ -246,29 +383,81 @@ pub fn redirects_csv(crawl: &Crawl) -> String {
 
 pub fn redirects_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
     let ctx = crate::audit::Ctx::urls_only(crawl);
-    let mut out = Csv::new(w, &["Address", "Status", "Redirect To", "Hops", "Final Address", "Final Status", "Loop"])?;
+    let mut out = Csv::new(
+        w,
+        &[
+            "Address",
+            "Status",
+            "Redirect To",
+            "Hops",
+            "Final Address",
+            "Final Status",
+            "Loop",
+        ],
+    )?;
     for p in crawl.pages.iter().filter(|p| p.is_redirect()) {
         let (fin, hops, looped) = ctx.follow(&p.url);
         out.row(&[
-            &p.url, &p.status, &p.redirect_to.as_deref().unwrap_or(""), &hops,
-            &fin.map(|f| f.url.as_str()).unwrap_or(""), &fin.map(|f| f.status.to_string()).unwrap_or_default(), &looped,
+            &p.url,
+            &p.status,
+            &p.redirect_to.as_deref().unwrap_or(""),
+            &hops,
+            &fin.map(|f| f.url.as_str()).unwrap_or(""),
+            &fin.map(|f| f.status.to_string()).unwrap_or_default(),
+            &looped,
         ])?;
     }
     out.finish()
 }
 
 pub fn suggestions_csv(s: &[Suggestion]) -> String {
-    let mut out = row(&cells!["Address", "Reason", "Current Title", "Suggested Title", "Title Length", "Current Description", "Suggested Description", "Description Length", "Source", "Error"]);
+    let mut out = row(&cells![
+        "Address",
+        "Reason",
+        "Current Title",
+        "Suggested Title",
+        "Title Length",
+        "Current Description",
+        "Suggested Description",
+        "Description Length",
+        "Source",
+        "Error"
+    ]);
     for x in s {
-        out.push_str(&row(&cells![x.url, x.reason, x.current_title, x.title, x.title.chars().count(), x.current_description, x.description, x.description.chars().count(), x.source, x.error.as_deref().unwrap_or("")]));
+        out.push_str(&row(&cells![
+            x.url,
+            x.reason,
+            x.current_title,
+            x.title,
+            x.title.chars().count(),
+            x.current_description,
+            x.description,
+            x.description.chars().count(),
+            x.source,
+            x.error.as_deref().unwrap_or("")
+        ]));
     }
     out
 }
 
 pub fn link_opportunities_csv(o: &[LinkOpportunity]) -> String {
-    let mut out = row(&cells!["Source Page", "Phrase", "Mentions", "Suggested Target", "Target Title", "Context"]);
+    let mut out = row(&cells![
+        "Source Page",
+        "Phrase",
+        "Mentions",
+        "Suggested Target",
+        "Target Title",
+        "Context"
+    ]);
     for x in o {
-        out.push_str(&row(&cells![x.source_url, x.phrase, x.mentions, x.target_url, x.target_title, x.context]));
+        out.push_str(&row(&cells![
+            x.source_url,
+            x.phrase,
+            x.mentions,
+            x.target_url,
+            x.target_title,
+            x.context
+        ]));
     }
     out
 }
@@ -286,7 +475,10 @@ fn hit_share(crawl: &Crawl, hits: &[usize]) -> f32 {
 }
 
 pub fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Self-contained, print-friendly HTML audit report.
@@ -294,11 +486,28 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
     let cat = catalogue();
     let score = audit.health_score(crawl);
     let count = |k: Kind| audit.triggered().filter(|(i, _)| cat[*i].kind == k).count();
-    let (issues, warnings, opps) = (count(Kind::Issue), count(Kind::Warning), count(Kind::Opportunity));
-    let affected: HashSet<usize> = audit.triggered().filter(|(i, _)| cat[*i].kind == Kind::Issue).flat_map(|(_, h)| h.iter().copied()).collect();
-    let score_color = if score >= 85 { "#1a7f37" } else if score >= 60 { "#9a6700" } else { "#cf222e" };
+    let (issues, warnings, opps) = (
+        count(Kind::Issue),
+        count(Kind::Warning),
+        count(Kind::Opportunity),
+    );
+    let affected: HashSet<usize> = audit
+        .triggered()
+        .filter(|(i, _)| cat[*i].kind == Kind::Issue)
+        .flat_map(|(_, h)| h.iter().copied())
+        .collect();
+    let score_color = if score >= 85 {
+        "#1a7f37"
+    } else if score >= 60 {
+        "#9a6700"
+    } else {
+        "#cf222e"
+    };
     let date = chrono::Local::now().format("%d %B %Y").to_string();
-    let site = url::Url::parse(&crawl.start_url).ok().and_then(|u| u.host_str().map(|h| h.to_string())).unwrap_or_else(|| crawl.start_url.clone());
+    let site = url::Url::parse(&crawl.start_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_else(|| crawl.start_url.clone());
 
     let mut cats = String::new();
     for c in CATEGORIES {
@@ -322,7 +531,11 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
             let _ = write!(urls, "<li><a href=\"{u}\">{u}</a></li>");
         }
         if hits.len() > 50 {
-            let _ = write!(urls, "<li class=muted>…and {} more (see the CSV export)</li>", hits.len() - 50);
+            let _ = write!(
+                urls,
+                "<li class=muted>…and {} more (see the CSV export)</li>",
+                hits.len() - 50
+            );
         }
         let _ = write!(
             rows,
@@ -354,11 +567,24 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
         };
         status_counts[k] += 1;
     }
-    let indexable = crawl.pages.iter().filter(|p| crate::audit::indexable(p)).count();
-    let prepared = if prepared_by.trim().is_empty() { String::new() } else { format!(" · Prepared by {}", esc(prepared_by)) };
-    let client_line = if client.trim().is_empty() { esc(&site) } else { esc(client) };
+    let indexable = crawl
+        .pages
+        .iter()
+        .filter(|p| crate::audit::indexable(p))
+        .count();
+    let prepared = if prepared_by.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" · Prepared by {}", esc(prepared_by))
+    };
+    let client_line = if client.trim().is_empty() {
+        esc(&site)
+    } else {
+        esc(client)
+    };
 
-    format!(r##"<!DOCTYPE html>
+    format!(
+        r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -497,6 +723,9 @@ mod tests {
 
     #[test]
     fn html_escaping() {
-        assert_eq!(esc("<a href=\"x\">&</a>"), "&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;");
+        assert_eq!(
+            esc("<a href=\"x\">&</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;"
+        );
     }
 }

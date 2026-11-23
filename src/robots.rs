@@ -62,7 +62,9 @@ impl Robots {
                 "sitemap" => r.sitemaps.push(value.to_string()),
                 "noindex" | "nofollow" => r.noindex_lines += 1,
                 // Unknown directives (Content-Signal, Host, Clean-param…) are ignored per RFC 9309.
-                k if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {}
+                k if !k.is_empty()
+                    && k.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {}
                 _ => r.invalid_lines += 1,
             }
             last_was_agent = false;
@@ -79,12 +81,19 @@ impl Robots {
         let named: Vec<&Group> = self
             .groups
             .iter()
-            .filter(|g| g.agents.iter().any(|a| a != "*" && !a.is_empty() && agent.contains(a.as_str())))
+            .filter(|g| {
+                g.agents
+                    .iter()
+                    .any(|a| a != "*" && !a.is_empty() && agent.contains(a.as_str()))
+            })
             .collect();
         if !named.is_empty() {
             return named;
         }
-        self.groups.iter().filter(|g| g.agents.iter().any(|a| a == "*")).collect()
+        self.groups
+            .iter()
+            .filter(|g| g.agents.iter().any(|a| a == "*"))
+            .collect()
     }
 
     pub fn crawl_delay(&self, agent: &str) -> Option<f32> {
@@ -174,14 +183,16 @@ mod tests {
 
     #[test]
     fn groups_for_the_same_agent_are_merged() {
-        let r = Robots::parse("User-agent: *
+        let r = Robots::parse(
+            "User-agent: *
 Disallow: /wp-admin/
 
 Sitemap: https://e.com/s.xml
 
 User-agent: *
 Disallow: /private/
-");
+",
+        );
         assert!(!r.is_allowed("/wp-admin/x", "shoutingtoad"));
         assert!(!r.is_allowed("/private/x", "shoutingtoad"));
         assert!(r.is_allowed("/blog/", "shoutingtoad"));
@@ -189,12 +200,23 @@ Disallow: /private/
 
     #[test]
     fn implicit_trailing_wildcard() {
-        let r = Robots::parse("User-agent: *
+        let r = Robots::parse(
+            "User-agent: *
 Disallow: /a*b
 Disallow: /exact$
 Disallow: /dir/
-");
-        for (path, allowed) in [("/axxb", false), ("/axxbzz", false), ("/ax", true), ("/exact", false), ("/exactly", true), ("/dir/x", false), ("/dir", true), ("/", true)] {
+",
+        );
+        for (path, allowed) in [
+            ("/axxb", false),
+            ("/axxbzz", false),
+            ("/ax", true),
+            ("/exact", false),
+            ("/exactly", true),
+            ("/dir/x", false),
+            ("/dir", true),
+            ("/", true),
+        ] {
             assert_eq!(r.is_allowed(path, "x"), allowed, "{path}");
         }
     }

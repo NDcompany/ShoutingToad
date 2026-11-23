@@ -50,11 +50,20 @@ const CATEGORIES: usize = 20;
 const CATEGORY_PAGES: usize = 10;
 
 fn main() {
-    let mut cfg = Cfg { pages: 10_000, slow_ms: 1500, hostile: false, port: 8099 };
+    let mut cfg = Cfg {
+        pages: 10_000,
+        slow_ms: 1500,
+        hostile: false,
+        port: 8099,
+    };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
-        let val = |i: usize| args.get(i + 1).and_then(|v| v.parse::<u64>().ok()).expect("option needs a number");
+        let val = |i: usize| {
+            args.get(i + 1)
+                .and_then(|v| v.parse::<u64>().ok())
+                .expect("option needs a number")
+        };
         match args[i].as_str() {
             "--pages" => cfg.pages = val(i) as usize,
             "--port" => cfg.port = val(i) as u16,
@@ -111,14 +120,100 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "garden", "river", "copper", "lantern", "harbor", "meadow", "violet", "engine", "summit", "canvas", "timber",
-    "orbit", "pepper", "falcon", "marble", "velvet", "candle", "glacier", "thunder", "saddle", "compass", "willow",
-    "basket", "pillar", "cobalt", "ribbon", "anchor", "cactus", "dragon", "ember", "fossil", "granite", "hazel",
-    "island", "jasmine", "kettle", "ladder", "mirror", "nectar", "oyster", "pebble", "quartz", "rocket", "silver",
-    "tunnel", "umbrella", "valley", "walnut", "yonder", "zephyr", "the", "and", "of", "to", "a", "in", "is", "for",
-    "with", "on", "that", "by", "this", "from", "at", "as", "an", "be", "are", "was", "it", "or", "we", "our",
-    "customers", "shipping", "quality", "design", "comfort", "durable", "lightweight", "classic", "modern", "premium",
-    "service", "warranty", "season", "collection", "review", "guide", "choose", "compare", "material", "price",
+    "garden",
+    "river",
+    "copper",
+    "lantern",
+    "harbor",
+    "meadow",
+    "violet",
+    "engine",
+    "summit",
+    "canvas",
+    "timber",
+    "orbit",
+    "pepper",
+    "falcon",
+    "marble",
+    "velvet",
+    "candle",
+    "glacier",
+    "thunder",
+    "saddle",
+    "compass",
+    "willow",
+    "basket",
+    "pillar",
+    "cobalt",
+    "ribbon",
+    "anchor",
+    "cactus",
+    "dragon",
+    "ember",
+    "fossil",
+    "granite",
+    "hazel",
+    "island",
+    "jasmine",
+    "kettle",
+    "ladder",
+    "mirror",
+    "nectar",
+    "oyster",
+    "pebble",
+    "quartz",
+    "rocket",
+    "silver",
+    "tunnel",
+    "umbrella",
+    "valley",
+    "walnut",
+    "yonder",
+    "zephyr",
+    "the",
+    "and",
+    "of",
+    "to",
+    "a",
+    "in",
+    "is",
+    "for",
+    "with",
+    "on",
+    "that",
+    "by",
+    "this",
+    "from",
+    "at",
+    "as",
+    "an",
+    "be",
+    "are",
+    "was",
+    "it",
+    "or",
+    "we",
+    "our",
+    "customers",
+    "shipping",
+    "quality",
+    "design",
+    "comfort",
+    "durable",
+    "lightweight",
+    "classic",
+    "modern",
+    "premium",
+    "service",
+    "warranty",
+    "season",
+    "collection",
+    "review",
+    "guide",
+    "choose",
+    "compare",
+    "material",
+    "price",
 ];
 
 fn cap(w: &str) -> String {
@@ -140,11 +235,20 @@ struct Resp {
 }
 
 fn resp(status: u16, ctype: &'static str, body: impl Into<Vec<u8>>) -> Resp {
-    Resp { status, ctype, headers: Vec::new(), body: body.into(), gzip_ok: false }
+    Resp {
+        status,
+        ctype,
+        headers: Vec::new(),
+        body: body.into(),
+        gzip_ok: false,
+    }
 }
 
 fn html(body: String) -> Resp {
-    Resp { gzip_ok: true, ..resp(200, "text/html; charset=utf-8", body) }
+    Resp {
+        gzip_ok: true,
+        ..resp(200, "text/html; charset=utf-8", body)
+    }
 }
 
 fn redirect(to: &str) -> Resp {
@@ -215,9 +319,18 @@ fn handle(stream: TcpStream, cfg: &Cfg) -> std::io::Result<()> {
         if slow {
             thread::sleep(Duration::from_millis(cfg.slow_ms));
         }
-        let mut head = format!("HTTP/1.1 {} {}\r\nContent-Type: {}\r\n", r.status, reason(r.status), r.ctype);
+        let mut head = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\n",
+            r.status,
+            reason(r.status),
+            r.ctype
+        );
         // gzip 2 of 3 compressible responses (by path hash) so both paths get exercised
-        if gzip && r.gzip_ok && !mix(path.len() as u64 ^ path.bytes().map(|b| b as u64).sum::<u64>()).is_multiple_of(3) {
+        if gzip
+            && r.gzip_ok
+            && !mix(path.len() as u64 ^ path.bytes().map(|b| b as u64).sum::<u64>())
+                .is_multiple_of(3)
+        {
             let mut e = GzEncoder::new(Vec::new(), Compression::fast());
             e.write_all(&r.body)?;
             r.body = e.finish()?;
@@ -269,10 +382,18 @@ fn route(path: &str, cfg: &Cfg) -> Resp {
         return html(article(num(rest).unwrap_or(0) % n.max(1), cfg));
     }
     if path.starts_with("/missing/") {
-        return resp(404, "text/html", "<html><head><title>Not found</title></head><body><h1>404</h1></body></html>");
+        return resp(
+            404,
+            "text/html",
+            "<html><head><title>Not found</title></head><body><h1>404</h1></body></html>",
+        );
     }
     if path.starts_with("/err/") {
-        return resp(500, "text/html", "<html><head><title>Error</title></head><body><h1>500</h1></body></html>");
+        return resp(
+            500,
+            "text/html",
+            "<html><head><title>Error</title></head><body><h1>500</h1></body></html>",
+        );
     }
     if let Some(rest) = path.strip_prefix("/c/") {
         let mut it = rest.split('/');
@@ -287,23 +408,41 @@ fn route(path: &str, cfg: &Cfg) -> Resp {
         return resp(200, "image/jpeg", vec![0xffu8; 2048]);
     }
     if path.starts_with("/js/") {
-        return resp(200, "application/javascript", "console.log('stress');".repeat(50));
+        return resp(
+            200,
+            "application/javascript",
+            "console.log('stress');".repeat(50),
+        );
     }
     if path.starts_with("/css/") {
         return resp(200, "text/css", "body{margin:0}".repeat(100));
     }
     if path == "/sitemap_index.xml" {
-        let mut s = String::from(r#"<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#);
+        let mut s = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#,
+        );
         for k in 0..(n + ORPHANS).div_ceil(10_000) {
-            s.push_str(&format!("<sitemap><loc>http://127.0.0.1:{}/sitemap_{k}.xml</loc></sitemap>", cfg.port));
+            s.push_str(&format!(
+                "<sitemap><loc>http://127.0.0.1:{}/sitemap_{k}.xml</loc></sitemap>",
+                cfg.port
+            ));
         }
         s.push_str("</sitemapindex>");
         return resp(200, "application/xml", s);
     }
-    if let Some(k) = path.strip_prefix("/sitemap_").and_then(|r| r.strip_suffix(".xml")).and_then(|k| k.parse::<usize>().ok()) {
-        let mut s = String::from(r#"<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#);
+    if let Some(k) = path
+        .strip_prefix("/sitemap_")
+        .and_then(|r| r.strip_suffix(".xml"))
+        .and_then(|k| k.parse::<usize>().ok())
+    {
+        let mut s = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"#,
+        );
         for i in k * 10_000..((k + 1) * 10_000).min(n + ORPHANS) {
-            s.push_str(&format!("<url><loc>http://127.0.0.1:{}/p/{i}</loc><lastmod>2026-01-01</lastmod></url>", cfg.port));
+            s.push_str(&format!(
+                "<url><loc>http://127.0.0.1:{}/p/{i}</loc><lastmod>2026-01-01</lastmod></url>",
+                cfg.port
+            ));
         }
         s.push_str("</urlset>");
         return resp(200, "application/xml", s);
@@ -325,8 +464,14 @@ fn robots(cfg: &Cfg) -> Resp {
         cfg.port
     );
     if cfg.hostile {
-        s.push_str(&format!("Sitemap: http://127.0.0.1:{}/h/sitemap_bad.xml\n", cfg.port));
-        s.push_str(&format!("Sitemap: http://127.0.0.1:{}/h/sitemap_self.xml\n", cfg.port));
+        s.push_str(&format!(
+            "Sitemap: http://127.0.0.1:{}/h/sitemap_bad.xml\n",
+            cfg.port
+        ));
+        s.push_str(&format!(
+            "Sitemap: http://127.0.0.1:{}/h/sitemap_self.xml\n",
+            cfg.port
+        ));
         s.push_str("this line is not valid\n");
         let mut k = 0;
         while s.len() < 2 * 1024 * 1024 {
@@ -368,7 +513,11 @@ fn category(k: usize, pg: usize, cfg: &Cfg) -> String {
     let mut r = Rng::new((k * 1000 + pg) as u64);
     for _ in 0..30 {
         let t = r.below(cfg.pages);
-        s.push_str(&format!("<li><a href=\"/p/{t}\">{} {}</a></li>", cap(r.word()), r.word()));
+        s.push_str(&format!(
+            "<li><a href=\"/p/{t}\">{} {}</a></li>",
+            cap(r.word()),
+            r.word()
+        ));
     }
     s.push_str("</ul>");
     if pg > 1 {
@@ -386,7 +535,11 @@ fn category(k: usize, pg: usize, cfg: &Cfg) -> String {
 fn article(i: usize, cfg: &Cfg) -> String {
     let n = cfg.pages;
     // every 50th page is a near copy of its neighbour (same text seed, different title)
-    let text_seed = if i.is_multiple_of(50) && i > 0 { i - 1 } else { i } as u64;
+    let text_seed = if i.is_multiple_of(50) && i > 0 {
+        i - 1
+    } else {
+        i
+    } as u64;
     let mut r = Rng::new(i as u64 * 7919);
     let mut t = Rng::new(text_seed * 104_729);
     let mut s = String::with_capacity(64 * 1024);
@@ -396,14 +549,26 @@ fn article(i: usize, cfg: &Cfg) -> String {
         if i.is_multiple_of(13) {
             s.push_str("<title>Product page | Stress Site</title>");
         } else {
-            s.push_str(&format!("<title>{w1} {w2} guide, article {i} | Stress Site</title>"));
+            s.push_str(&format!(
+                "<title>{w1} {w2} guide, article {i} | Stress Site</title>"
+            ));
         }
     }
     if !i.is_multiple_of(17) {
         s.push_str(&format!("<meta name=\"description\" content=\"Everything about {w1} {w2}: a long read about article {i} with tips and reviews.\">"));
     }
-    s.push_str(&format!("<link rel=\"canonical\" href=\"http://127.0.0.1:{}{}\">", cfg.port, if i == 0 { "/".to_string() } else { format!("/p/{i}") }));
-    s.push_str("<link rel=\"stylesheet\" href=\"/css/site.css\"><script src=\"/js/0.js\" defer></script>");
+    s.push_str(&format!(
+        "<link rel=\"canonical\" href=\"http://127.0.0.1:{}{}\">",
+        cfg.port,
+        if i == 0 {
+            "/".to_string()
+        } else {
+            format!("/p/{i}")
+        }
+    ));
+    s.push_str(
+        "<link rel=\"stylesheet\" href=\"/css/site.css\"><script src=\"/js/0.js\" defer></script>",
+    );
     s.push_str(&format!(
         "<script type=\"application/ld+json\">{{\"@context\":\"https://schema.org\",\"@type\":\"Article\",\"headline\":\"{w1} {w2} {i}\",\"author\":{{\"@type\":\"Person\",\"name\":\"Writer {}\"}},\"datePublished\":\"2026-01-{:02}\"}}</script>",
         i % 40,
@@ -413,7 +578,10 @@ fn article(i: usize, cfg: &Cfg) -> String {
     nav(&mut s);
     s.push_str(&format!("<main><h1>{w1} {w2} {i}</h1>"));
     // tree links keep every page within log10(N) clicks of the home page
-    let mut links: Vec<String> = (i * 10 + 1..=i * 10 + 10).filter(|&c| c < n).map(|c| format!("/p/{c}")).collect();
+    let mut links: Vec<String> = (i * 10 + 1..=i * 10 + 10)
+        .filter(|&c| c < n)
+        .map(|c| format!("/p/{c}"))
+        .collect();
     for _ in 0..40 + r.below(90) {
         links.push(format!("/p/{}", r.below(n)));
     }
@@ -434,8 +602,20 @@ fn article(i: usize, cfg: &Cfg) -> String {
     }
     if i == 0 && cfg.hostile {
         for h in [
-            "big", "binary", "deep", "badutf8", "cp1252", "loop1", "cal/0", "drip", "reset", "empty", "headers",
-            "hugeheader", "many", "deepinline",
+            "big",
+            "binary",
+            "deep",
+            "badutf8",
+            "cp1252",
+            "loop1",
+            "cal/0",
+            "drip",
+            "reset",
+            "empty",
+            "headers",
+            "hugeheader",
+            "many",
+            "deepinline",
         ] {
             links.push(format!("/h/{h}"));
         }
@@ -454,7 +634,12 @@ fn article(i: usize, cfg: &Cfg) -> String {
         // a few links per paragraph, plus an image now and then
         for _ in 0..3 {
             if li < links.len() {
-                s.push_str(&format!("<a href=\"{}\">{} {}</a> ", links[li], t.word(), t.word()));
+                s.push_str(&format!(
+                    "<a href=\"{}\">{} {}</a> ",
+                    links[li],
+                    t.word(),
+                    t.word()
+                ));
                 li += 1;
             }
         }
@@ -470,11 +655,17 @@ fn article(i: usize, cfg: &Cfg) -> String {
     }
     s.push_str("<ul class=\"related\">");
     for l in &links[li.min(links.len())..] {
-        s.push_str(&format!("<li><a href=\"{l}\">Related {}</a></li>", r.word()));
+        s.push_str(&format!(
+            "<li><a href=\"{l}\">Related {}</a></li>",
+            r.word()
+        ));
     }
     s.push_str("</ul></main>");
     footer(&mut s);
-    s.push_str(&format!("<script src=\"/js/{}.js\" async></script></body></html>", 1 + i % 4));
+    s.push_str(&format!(
+        "<script src=\"/js/{}.js\" async></script></body></html>",
+        1 + i % 4
+    ));
     s
 }
 
