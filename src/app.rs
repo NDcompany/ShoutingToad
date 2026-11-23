@@ -188,6 +188,26 @@ pub struct App {
     icon: Option<egui::TextureHandle>,
     screenshot: Option<String>,
     frames: usize,
+    overview_stats: OverviewStats,
+}
+
+/// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
+/// costs ~15 ms, too much for every frame).
+#[derive(Default)]
+struct OverviewStats {
+    key: (usize, usize, String),
+    at: Option<Instant>,
+    internal_html: usize,
+    indexable: usize,
+    /// 2xx, 3xx, 4xx, 5xx, no response
+    status: [usize; 5],
+    depth: std::collections::BTreeMap<usize, usize>,
+    kinds: std::collections::BTreeMap<&'static str, usize>,
+}
+
+/// Free a replaced crawl off the UI thread: dropping millions of small allocations takes seconds.
+fn drop_in_background<T: Send + 'static>(old: T) {
+    std::thread::spawn(move || drop(old));
 }
 
 impl App {
@@ -266,6 +286,7 @@ impl App {
             icon,
             screenshot,
             frames: 0,
+            overview_stats: OverviewStats::default(),
         }
     }
 
@@ -285,11 +306,14 @@ impl App {
         self.stop();
         match crawler::start(seeds.clone(), list, self.settings.cfg.clone()) {
             Ok(h) => {
-                self.crawl = Crawl {
-                    start_url: crawler::normalize_url(&seeds[0]).map(|u| u.to_string()).unwrap_or_default(),
-                    started: chrono::Local::now().to_rfc3339(),
-                    ..Default::default()
-                };
+                drop_in_background(std::mem::replace(
+                    &mut self.crawl,
+                    Crawl {
+                        start_url: crawler::normalize_url(&seeds[0]).map(|u| u.to_string()).unwrap_or_default(),
+                        started: chrono::Local::now().to_rfc3339(),
+                        ..Default::default()
+                    },
+                ));
                 if !list {
                     self.settings.last_url = seeds[0].clone();
                 }
@@ -333,9 +357,9 @@ impl App {
     fn clear(&mut self) {
         self.stop();
         self.handle = None;
-        self.crawl = Crawl::default();
+        drop_in_background(std::mem::take(&mut self.crawl));
         self.url_index.clear();
-        self.audit = Audit::default();
+        drop_in_background(std::mem::take(&mut self.audit));
         self.state = State::Idle;
         self.selected = None;
         self.selected_check = None;
@@ -429,15 +453,23 @@ impl App {
         let (col, asc) = self.sort;
         let inl = |i: usize| self.audit.inlinks.get(i).map(|v| v.len()).unwrap_or(0);
         let iss = |i: usize| self.audit.page_issues.get(i).map(|v| v.len()).unwrap_or(0);
+        // Keys that cost more than a field read are computed once per row (this runs every
+        // 600 ms during a crawl). Stable sorts with a reversed key keep the same tie order.
+        match (col, asc) {
+            (Col::Indexability, true) => rows.sort_by_cached_key(|&i| indexability_label(&pages[i])),
+            (Col::Indexability, false) => rows.sort_by_cached_key(|&i| std::cmp::Reverse(indexability_label(&pages[i]))),
+            (Col::TitleLen, true) => rows.sort_by_cached_key(|&i| pages[i].title().chars().count()),
+            (Col::TitleLen, false) => rows.sort_by_cached_key(|&i| std::cmp::Reverse(pages[i].title().chars().count())),
+            _ => {}
+        }
         rows.sort_by(|&a, &b| {
             let (pa, pb) = (&pages[a], &pages[b]);
             let o = match col {
                 Col::Id => a.cmp(&b),
                 Col::Url => pa.url.cmp(&pb.url),
                 Col::Status => pa.status.cmp(&pb.status),
-                Col::Indexability => indexability_label(pa).cmp(indexability_label(pb)),
+                Col::Indexability | Col::TitleLen => std::cmp::Ordering::Equal, // sorted above
                 Col::Title => pa.title().cmp(pb.title()),
-                Col::TitleLen => pa.title().chars().count().cmp(&pb.title().chars().count()),
                 Col::Words => pa.word_count().cmp(&pb.word_count()),
                 Col::Depth => pa.depth.cmp(&pb.depth),
                 Col::Inlinks => inl(a).cmp(&inl(b)),
@@ -1010,11 +1042,44 @@ impl App {
         });
     }
 
+    fn refresh_overview_stats(&mut self) {
+        let pages = &self.crawl.pages;
+        let key = (pages.len(), pages.as_ptr() as usize, self.crawl.started.clone());
+        let st = &mut self.overview_stats;
+        let fresh = st.at.is_some_and(|t| self.state == State::Crawling && t.elapsed() < Duration::from_secs(1));
+        if st.key == key || fresh {
+            return;
+        }
+        let mut new = OverviewStats { key, at: Some(Instant::now()), ..Default::default() };
+        for p in pages {
+            new.status[match p.status {
+                200..=299 => 0,
+                300..=399 => 1,
+                400..=499 => 2,
+                500..=599 => 3,
+                0 => 4,
+                _ => continue,
+            }] += 1;
+        }
+        for p in pages {
+            if audit::ih(p) {
+                new.internal_html += 1;
+                *new.depth.entry(p.depth.min(10)).or_insert(0) += 1;
+            }
+            if audit::indexable(p) {
+                new.indexable += 1;
+            }
+            *new.kinds.entry(p.kind()).or_insert(0) += 1;
+        }
+        *st = new;
+    }
+
     fn overview(&mut self, ui: &mut egui::Ui) {
+        self.refresh_overview_stats();
         let cat = catalogue();
         let pages = &self.crawl.pages;
-        let internal_html = pages.iter().filter(|p| audit::ih(p)).count();
-        let indexable = pages.iter().filter(|p| audit::indexable(p)).count();
+        let st = &self.overview_stats;
+        let (internal_html, indexable) = (st.internal_html, st.indexable);
         let score = self.audit.health_score(&self.crawl);
         let counts = [Kind::Issue, Kind::Warning, Kind::Opportunity].map(|k| self.audit.triggered().filter(|(i, _)| cat[*i].kind == k).count());
         let mut jump: Option<usize> = None;
@@ -1066,31 +1131,23 @@ impl App {
 
                 let ui = &mut cols[1];
                 ui.heading("Response codes");
-                let buckets = [("2xx Success", 200..300, GOOD), ("3xx Redirect", 300..400, OPPORTUNITY), ("4xx Client error", 400..500, ISSUE), ("5xx Server error", 500..600, ISSUE)];
+                let buckets = [("2xx Success", GOOD), ("3xx Redirect", OPPORTUNITY), ("4xx Client error", ISSUE), ("5xx Server error", ISSUE)];
                 let total = pages.len().max(1) as f32;
-                for (label, range, col) in buckets {
-                    let n = pages.iter().filter(|p| range.contains(&p.status)).count();
+                for (k, (label, col)) in buckets.into_iter().enumerate() {
+                    let n = st.status[k];
                     bar(ui, label, n, n as f32 / total, col);
                 }
-                let none = pages.iter().filter(|p| p.status == 0).count();
+                let none = st.status[4];
                 bar(ui, "No response / blocked", none, none as f32 / total, Color32::GRAY);
                 ui.add_space(10.0);
                 ui.heading("Crawl depth (internal HTML)");
-                let mut depth = std::collections::BTreeMap::new();
-                for p in pages.iter().filter(|p| audit::ih(p)) {
-                    *depth.entry(p.depth.min(10)).or_insert(0usize) += 1;
-                }
-                let max = depth.values().copied().max().unwrap_or(1) as f32;
-                for (d, n) in depth {
+                let max = st.depth.values().copied().max().unwrap_or(1) as f32;
+                for (&d, &n) in &st.depth {
                     bar(ui, &if d == 10 { "10+".to_string() } else { d.to_string() }, n, n as f32 / max, TOAD);
                 }
                 ui.add_space(10.0);
                 ui.heading("Content types");
-                let mut kinds = std::collections::BTreeMap::new();
-                for p in pages {
-                    *kinds.entry(p.kind()).or_insert(0usize) += 1;
-                }
-                for (k, n) in kinds {
+                for (&k, &n) in &st.kinds {
                     bar(ui, k, n, n as f32 / total, OPPORTUNITY);
                 }
             });
