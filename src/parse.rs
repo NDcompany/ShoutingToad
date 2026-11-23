@@ -539,8 +539,12 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
             "style" => {
                 let body: String = el.text().collect();
                 d.inline_styles_bytes += body.len();
-                // Only web fonts (url() sources) load over the network; local() fallbacks need no font-display.
-                if re_font_face.find_iter(&body).any(|m| m.as_str().contains("url(") && !m.as_str().contains("font-display")) {
+                // Only fonts fetched over the network need font-display; local() and
+                // inline data: fonts are available without a download.
+                let web_font = |f: &str| {
+                    f.split("url(").skip(1).any(|u| !u.trim_start().trim_start_matches(['"', '\'']).starts_with("data:"))
+                };
+                if re_font_face.find_iter(&body).any(|m| web_font(m.as_str()) && !m.as_str().contains("font-display")) {
                     d.font_face_without_display = true;
                 }
             }
@@ -746,6 +750,8 @@ mod tests {
     fn font_display_only_matters_for_web_fonts() {
         let local = parse("<html><head><style>@font-face{font-family:F;src:local(Arial);size-adjust:106%}</style></head></html>");
         assert!(!local.font_face_without_display);
+        let inline = parse("<html><head><style>@font-face{font-family:S;src:url(\"data:font/woff;base64,AAAA\") format('woff')}</style></head></html>");
+        assert!(!inline.font_face_without_display);
         let web = parse("<html><head><style>@font-face{font-family:F;src:url(/f.woff2)}</style></head></html>");
         assert!(web.font_face_without_display);
     }
