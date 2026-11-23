@@ -266,8 +266,14 @@ impl Page {
         parts.join(", ").to_ascii_lowercase()
     }
 
+    /// Directive names, with any user-agent prefix ("googlebot: noindex") removed and
+    /// valued directives ("max-image-preview:none") reduced to their name.
+    pub fn directive_names(&self) -> Vec<String> {
+        self.robots_directives().split([',', ';']).map(directive_name).collect()
+    }
+
     pub fn has_directive(&self, d: &str) -> bool {
-        self.robots_directives().split([',', ';']).any(|t| directive_token(t) == d)
+        self.directive_names().iter().any(|t| t == d)
     }
 
     pub fn is_noindex(&self) -> bool {
@@ -279,13 +285,17 @@ impl Page {
     }
 }
 
-/// One robots directive token without its user-agent prefix: "googlebot: noindex" -> "noindex".
-/// Valued directives stay whole, so "max-image-preview:none" is not mistaken for "none".
-pub fn directive_token(token: &str) -> &str {
-    let t = token.trim();
-    match t.split_once(':') {
-        Some((k, rest)) if !["max-snippet", "max-image-preview", "max-video-preview", "unavailable_after"].contains(&k.trim()) => rest.trim(),
-        _ => t,
+/// Name of one lower-case robots directive token: strips a user-agent prefix
+/// ("googlebot: noindex") and the value of valued directives ("max-image-preview:none").
+pub fn directive_name(token: &str) -> String {
+    const VALUED: &[&str] = &["max-snippet", "max-image-preview", "max-video-preview", "unavailable_after"];
+    match token.split_once(':') {
+        Some((k, _)) if VALUED.contains(&k.trim()) => k.trim().to_string(),
+        Some((_, v)) => match v.split_once(':') {
+            Some((k, _)) if VALUED.contains(&k.trim()) => k.trim().to_string(),
+            _ => v.trim().to_string(),
+        },
+        None => token.trim().to_string(),
     }
 }
 
@@ -323,6 +333,9 @@ pub struct SiteInfo {
     pub sitemap_urls: Vec<String>,
     /// False in list mode, where sitemaps are not looked for.
     pub sitemaps_checked: bool,
+    /// Not every listed sitemap was read (crawl limit or sitemap cap reached).
+    #[serde(default)]
+    pub sitemaps_partial: bool,
     /// http:// version of the start URL redirects to https://.
     pub http_redirects_to_https: Option<bool>,
     /// The www / non-www alternate host redirects to the start host.
@@ -347,5 +360,24 @@ impl Crawl {
     pub fn load(path: &std::path::Path) -> Result<Crawl, String> {
         let data = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
         serde_json::from_slice(&data).map_err(|e| format!("{} is not a ShoutingToad crawl file: {e}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(robots: &str) -> Page {
+        Page { html: Some(Box::new(HtmlData { meta_robots: vec![robots.into()], ..Default::default() })), ..Default::default() }
+    }
+
+    #[test]
+    fn valued_directives_are_not_none_or_noindex() {
+        let p = page("max-image-preview:none, max-snippet:-1");
+        assert!(!p.is_noindex() && !p.has_directive("none"));
+        assert!(p.has_directive("max-image-preview"));
+        assert!(page("googlebot: noindex").is_noindex());
+        assert!(page("googlebot: max-image-preview:none").has_directive("max-image-preview"));
+        assert!(page("unavailable_after: 2026-01-01T00:00:00Z").has_directive("unavailable_after"));
     }
 }

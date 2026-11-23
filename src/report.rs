@@ -75,7 +75,6 @@ pub fn internal_csv(crawl: &Crawl, audit: &Audit) -> String {
 }
 
 pub fn issues_csv(crawl: &Crawl, audit: &Audit) -> String {
-    let base = crawl.pages.iter().filter(|p| ih(p)).count().max(1);
     let cat = catalogue();
     let mut out = row(&cells!["Issue ID", "Category", "Issue", "Type", "Priority", "URLs", "% of Internal HTML", "Description", "How To Fix"]);
     let mut list: Vec<(usize, &Vec<usize>)> = audit.triggered().collect();
@@ -84,7 +83,7 @@ pub fn issues_csv(crawl: &Crawl, audit: &Audit) -> String {
         let c = &cat[i];
         out.push_str(&row(&cells![
             c.id, c.category, c.name, c.kind.label(), c.priority.label(), hits.len(),
-            format!("{:.1}", hits.len() as f32 * 100.0 / base as f32), c.description, c.fix
+            format!("{:.1}", hit_share(crawl, hits)), c.description, c.fix
         ]));
     }
     out
@@ -202,6 +201,18 @@ pub fn link_opportunities_csv(o: &[LinkOpportunity]) -> String {
     out
 }
 
+/// Share of affected URLs in percent. Checks on HTML pages are measured against
+/// internal HTML pages; checks that also hit redirects, images or other files are
+/// measured against all internal URLs, so the figure never exceeds 100%.
+fn hit_share(crawl: &Crawl, hits: &[usize]) -> f32 {
+    let base = if hits.iter().all(|&i| ih(&crawl.pages[i])) {
+        crawl.pages.iter().filter(|p| ih(p)).count()
+    } else {
+        crawl.pages.iter().filter(|p| p.is_internal).count()
+    };
+    (hits.len() as f32 * 100.0 / base.max(1) as f32).min(100.0)
+}
+
 pub fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
@@ -210,8 +221,6 @@ pub fn esc(s: &str) -> String {
 pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str) -> String {
     let cat = catalogue();
     let score = audit.health_score(crawl);
-    let internal_html = crawl.pages.iter().filter(|p| ih(p)).count();
-    let base = internal_html.max(1);
     let count = |k: Kind| audit.triggered().filter(|(i, _)| cat[*i].kind == k).count();
     let (issues, warnings, opps) = (count(Kind::Issue), count(Kind::Warning), count(Kind::Opportunity));
     let affected: HashSet<usize> = audit.triggered().filter(|(i, _)| cat[*i].kind == Kind::Issue).flat_map(|(_, h)| h.iter().copied()).collect();
@@ -253,7 +262,7 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
             esc(c.category),
             hits.len(),
             if hits.len() == 1 { "" } else { "s" },
-            hits.len() as f32 * 100.0 / base as f32,
+            hit_share(crawl, hits),
             esc(&c.description),
             esc(&c.fix),
         );

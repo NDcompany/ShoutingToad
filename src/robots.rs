@@ -73,16 +73,22 @@ impl Robots {
         r
     }
 
-    /// Group for `agent` (lower-case product token), falling back to `*`.
-    fn group(&self, agent: &str) -> Option<&Group> {
-        self.groups
+    /// Groups for `agent` (lower-case product token), falling back to `*`. RFC 9309:
+    /// several groups naming the same agent are combined.
+    fn groups_for(&self, agent: &str) -> Vec<&Group> {
+        let named: Vec<&Group> = self
+            .groups
             .iter()
-            .find(|g| g.agents.iter().any(|a| a != "*" && agent.contains(a.as_str())))
-            .or_else(|| self.groups.iter().find(|g| g.agents.iter().any(|a| a == "*")))
+            .filter(|g| g.agents.iter().any(|a| a != "*" && !a.is_empty() && agent.contains(a.as_str())))
+            .collect();
+        if !named.is_empty() {
+            return named;
+        }
+        self.groups.iter().filter(|g| g.agents.iter().any(|a| a == "*")).collect()
     }
 
     pub fn crawl_delay(&self, agent: &str) -> Option<f32> {
-        self.group(agent).and_then(|g| g.crawl_delay)
+        self.groups_for(agent).iter().find_map(|g| g.crawl_delay)
     }
 
     /// True when `/` is disallowed for the agent.
@@ -92,9 +98,8 @@ impl Robots {
 
     /// `path` is the URL path plus query (e.g. `/a/b?c=1`).
     pub fn is_allowed(&self, path: &str, agent: &str) -> bool {
-        let Some(g) = self.group(agent) else { return true };
         let mut best: Option<(usize, bool)> = None;
-        for (allow, pat) in &g.rules {
+        for (allow, pat) in self.groups_for(agent).into_iter().flat_map(|g| &g.rules) {
             if pattern_matches(pat, path) {
                 let len = pat.len();
                 match best {
@@ -161,6 +166,21 @@ mod tests {
         let r = Robots::parse("User-agent: *\nDisallow: /\n\nUser-agent: Googlebot\nUser-agent: shoutingtoad\nDisallow:\n");
         assert!(r.is_allowed("/page", "shoutingtoad"));
         assert!(r.disallows_all("otherbot"));
+    }
+
+    #[test]
+    fn groups_for_the_same_agent_are_merged() {
+        let r = Robots::parse("User-agent: *
+Disallow: /wp-admin/
+
+Sitemap: https://e.com/s.xml
+
+User-agent: *
+Disallow: /private/
+");
+        assert!(!r.is_allowed("/wp-admin/x", "shoutingtoad"));
+        assert!(!r.is_allowed("/private/x", "shoutingtoad"));
+        assert!(r.is_allowed("/blog/", "shoutingtoad"));
     }
 
     #[test]

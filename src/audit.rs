@@ -130,6 +130,7 @@ pub struct Ctx<'a> {
     sitemap: HashSet<&'a str>,
     ok_urls_lower: HashMap<String, usize>,
     start_id: Option<usize>,
+    redirect_targets: HashSet<&'a str>,
 }
 
 impl<'a> Ctx<'a> {
@@ -179,7 +180,27 @@ impl<'a> Ctx<'a> {
         let near_dup = near_duplicates(pages);
         let sitemap = crawl.site.sitemap_urls.iter().map(|s| s.as_str()).collect();
         let start_id = pages.iter().find(|p| p.source == Some(Source::Seed)).map(|p| p.id);
-        Ctx { crawl, by_url, by_id, inlinks, titles, descs, keywords, h1s, h2s, hashes, near_dup, sitemap, ok_urls_lower, start_id }
+        // URLs reached through a redirect from a crawled URL (link targets of 301s etc.).
+        let redirect_targets = pages
+            .iter()
+            .filter(|p| p.is_redirect() && !matches!(p.source, Some(Source::Robots) | Some(Source::Sitemap)))
+            .filter_map(|p| p.redirect_to.as_deref())
+            .collect();
+        let mut ctx = Ctx { crawl, by_url, by_id, inlinks, titles, descs, keywords, h1s, h2s, hashes, near_dup, sitemap, ok_urls_lower, start_id, redirect_targets };
+        // When the start URL redirects (http -> https, bare -> www), site-level checks belong to the final page.
+        if let Some(seed) = pages.iter().find(|p| p.source == Some(Source::Seed)) {
+            if let (Some(f), _, false) = ctx.follow(&seed.url) {
+                if f.is_internal {
+                    ctx.start_id = Some(f.id);
+                }
+            }
+        }
+        ctx
+    }
+
+    /// The page has internal links pointing at it, directly or through a redirect.
+    pub fn linked(&self, p: &Page) -> bool {
+        !self.inlinks_of(p).is_empty() || self.redirect_targets.contains(p.url.as_str())
     }
 
     pub fn page(&self, url: &str) -> Option<&'a Page> {
@@ -317,7 +338,12 @@ impl Audit {
 
     /// 0-100 score: each triggered check costs points by type, priority and spread.
     pub fn health_score(&self, crawl: &Crawl) -> u32 {
-        let base = crawl.pages.iter().filter(|p| ih(p)).count().max(1) as f32;
+        let html = crawl.pages.iter().filter(|p| ih(p)).count();
+        // Nothing loaded (TLS failure, DNS error, every page 4xx/5xx): the site is not healthy.
+        if html == 0 && crawl.pages.iter().any(|p| p.is_internal && !p.blocked_by_robots) {
+            return 0;
+        }
+        let base = html.max(1) as f32;
         let cat = catalogue();
         let mut penalty = 0.0f32;
         for (i, hits) in self.triggered() {
@@ -372,4 +398,16 @@ pub fn run(crawl: &Crawl) -> Audit {
         }
     }
     Audit { hits, page_issues, inlinks: ctx.inlinks }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreachable_site_scores_zero() {
+        let page = Page { id: 1, url: "https://e.com/".into(), source: Some(Source::Seed), is_internal: true, error: Some("Connection failed: invalid peer certificate".into()), ..Default::default() };
+        let crawl = Crawl { pages: vec![page], ..Default::default() };
+        assert_eq!(run(&crawl).health_score(&crawl), 0);
+    }
 }

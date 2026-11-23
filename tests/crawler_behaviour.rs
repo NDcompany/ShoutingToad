@@ -85,7 +85,9 @@ fn max_urls_and_max_depth_limit_the_crawl() {
         site(b, &pages, vec![])
     });
     let c = crawl(&[srv.url("/")], false, Config { max_urls: 6, ..config() });
-    assert!((3..=6).contains(&c.pages.len()), "max_urls=6 crawled {} URLs", c.pages.len());
+    // robots.txt and sitemap files don't count against the URL budget.
+    let crawled = c.pages.iter().filter(|p| !matches!(p.source, Some(Source::Robots) | Some(Source::Sitemap))).count();
+    assert!((3..=6).contains(&crawled), "max_urls=6 crawled {crawled} URLs");
     let fetched = fan.iter().filter(|p| srv.requested(p)).count();
     assert!(fetched <= 5, "max_urls=6 fetched {fetched} of the linked pages");
 

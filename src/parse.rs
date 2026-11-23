@@ -34,6 +34,26 @@ fn sniff_meta_charset(bytes: &[u8]) -> Option<String> {
     re.captures(&head).map(|c| c[1].to_string())
 }
 
+/// Decode %XX escapes (URL fragments are stored encoded, element ids are not).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn norm(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -60,7 +80,15 @@ fn has_ancestor(el: &ElementRef, name: &str) -> bool {
         .any(|a| a.value().as_element().is_some_and(|e| e.name() == name))
 }
 
-/// Visible text below `el`, skipping non-rendered subtrees.
+const BLOCKS: &[&str] = &[
+    "p", "div", "li", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th", "tr", "table",
+    "section", "article", "aside", "header", "footer", "nav", "main", "blockquote", "figcaption", "figure", "pre",
+    "form", "fieldset", "details", "summary", "address", "caption", "option", "button", "label", "br", "hr",
+];
+
+/// Visible text below `el`, skipping non-rendered subtrees. Block boundaries
+/// become newlines so menus and grids without punctuation still split into
+/// separate sentences for readability scoring.
 fn visible_text(el: ElementRef, out: &mut String) {
     for child in el.children() {
         if let Some(t) = child.value().as_text() {
@@ -69,10 +97,23 @@ fn visible_text(el: ElementRef, out: &mut String) {
         } else if let Some(ch) = ElementRef::wrap(child) {
             match ch.value().name() {
                 "script" | "style" | "noscript" | "template" | "svg" | "head" | "iframe" | "object" => {}
+                n if BLOCKS.contains(&n) => {
+                    out.push('\n');
+                    visible_text(ch, out);
+                    out.push('\n');
+                }
                 _ => visible_text(ch, out),
             }
         }
     }
+}
+
+/// Sentences: `.!?`-separated runs of 2+ words, and every text block counts as at least one.
+fn count_sentences(text: &str) -> usize {
+    text.split('\n')
+        .filter(|b| b.split_whitespace().any(|w| w.chars().any(|c| c.is_alphanumeric())))
+        .map(|b| b.split(['.', '!', '?']).filter(|s| s.split_whitespace().count() >= 2).count().max(1))
+        .sum()
 }
 
 pub fn fnv64(data: &[u8]) -> u64 {
@@ -218,8 +259,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     }
 
     let mut id_counts: HashMap<String, usize> = HashMap::new();
-    // <a name="x"> is also a valid #x bookmark target.
-    let mut anchor_names: Vec<String> = Vec::new();
+    let mut anchor_names: HashSet<String> = HashSet::new();
     let mut deprecated: HashSet<String> = HashSet::new();
 
     for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
@@ -227,11 +267,14 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         let name = el.value().name();
         let in_head = has_ancestor(&el, "head");
 
-        if let Some(n) = el.value().attr("name").filter(|_| name == "a") {
-            anchor_names.push(n.to_string());
-        }
         if let Some(id) = el.value().attr("id") {
             *id_counts.entry(id.to_string()).or_insert(0) += 1;
+        }
+        // <a name="x"> is also a valid #x target.
+        if name == "a" {
+            if let Some(n) = el.value().attr("name") {
+                anchor_names.insert(n.to_string());
+            }
         }
         if let Some(t) = el.value().attr("tabindex") {
             if t.trim().parse::<i32>().is_ok_and(|v| v > 0) {
@@ -407,7 +450,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 if full.scheme() != "http" && full.scheme() != "https" {
                     continue;
                 }
-                let fragment = full.fragment().filter(|f| !f.is_empty()).map(|f| f.to_string());
+                let fragment = full.fragment().filter(|f| !f.is_empty()).map(percent_decode);
                 full.set_fragment(None);
 
                 let mut anchor = text_of(el);
@@ -497,7 +540,12 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
             "style" => {
                 let body: String = el.text().collect();
                 d.inline_styles_bytes += body.len();
-                if re_font_face.find_iter(&body).any(|m| !m.as_str().contains("font-display")) {
+                // Only fonts fetched over the network need font-display; local() and
+                // inline data: fonts are available without a download.
+                let web_font = |f: &str| {
+                    f.split("url(").skip(1).any(|u| !u.trim_start().trim_start_matches(['"', '\'']).starts_with("data:"))
+                };
+                if re_font_face.find_iter(&body).any(|m| web_font(m.as_str()) && !m.as_str().contains("font-display")) {
                     d.font_face_without_display = true;
                 }
             }
@@ -600,7 +648,8 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
 
     // ---- visible text, readability, fingerprints
     let mut text = String::new();
-    if let Some(body) = doc.root_element().children().filter_map(ElementRef::wrap).find(|e| e.value().name() == "body") {
+    let body = doc.root_element().children().filter_map(ElementRef::wrap).find(|e| e.value().name() == "body");
+    if let Some(body) = body {
         visible_text(body, &mut text);
     }
     let words: Vec<String> = text
@@ -609,16 +658,19 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         .map(|w| w.to_lowercase())
         .collect();
     d.word_count = words.len();
-    d.sentence_count = text
-        .split(['.', '!', '?'])
-        .filter(|s| s.split_whitespace().count() >= 2)
-        .count()
-        .max(if words.is_empty() { 0 } else { 1 });
+    d.sentence_count = count_sentences(&text);
     d.flesch = flesch(&words, d.sentence_count);
     let joined = words.join(" ");
     d.content_hash = fnv64(joined.as_bytes());
     d.simhash = simhash(&words);
-    d.lorem_ipsum = joined.contains("lorem ipsum");
+    // Placeholder copy counts only in prose; code samples (docs, tutorials) use it on purpose.
+    d.lorem_ipsum = joined.contains("lorem ipsum")
+        && body.is_some_and(|b| {
+            b.descendants().filter_map(|n| n.value().as_text().map(|t| (n, t))).any(|(n, t)| {
+                t.to_lowercase().contains("lorem ipsum")
+                    && !n.ancestors().filter_map(|a| a.value().as_element()).any(|e| matches!(e.name(), "pre" | "code" | "samp" | "kbd" | "textarea"))
+            })
+        });
     d.text_ratio = if raw.is_empty() { 0.0 } else { norm(&text).len() as f32 / raw.len() as f32 * 100.0 };
     let mut capped = norm(&text);
     if capped.len() > TEXT_CAP {
@@ -679,6 +731,37 @@ mod tests {
         let d = parse("<html><head><div>x</div><title>T</title></head><body><title>Again</title></body></html>");
         assert!(d.invalid_in_head.contains(&"div".to_string()));
         assert!(d.title_outside_head);
+    }
+
+    #[test]
+    fn blocks_without_punctuation_count_as_sentences() {
+        let items: String = (0..40).map(|i| format!("<li><a href=\"/p{i}\">Camper van model {i}</a></li>")).collect();
+        let d = parse(&format!("<html><body><ul>{items}</ul><p>One sentence here. And another one!</p></body></html>"));
+        assert_eq!(d.sentence_count, 42);
+        assert!(d.flesch > 30.0, "flesch {}", d.flesch);
+    }
+
+    #[test]
+    fn lorem_in_code_samples_is_not_placeholder_copy() {
+        assert!(!parse("<html><body><pre><code>&lt;p&gt;Lorem ipsum dolor&lt;/p&gt;</code></pre></body></html>").lorem_ipsum);
+        assert!(parse("<html><body><p>Lorem ipsum dolor sit amet</p></body></html>").lorem_ipsum);
+    }
+
+    #[test]
+    fn bookmark_targets_include_named_anchors_and_decoded_fragments() {
+        let d = parse(r#"<html><body><a name="legacy"></a><h2 id="café">x</h2><a href="/p#caf%C3%A9">y</a></body></html>"#);
+        assert!(d.ids.binary_search(&"legacy".to_string()).is_ok());
+        assert_eq!(d.links[0].fragment.as_deref(), Some("café"));
+    }
+
+    #[test]
+    fn font_display_only_matters_for_web_fonts() {
+        let local = parse("<html><head><style>@font-face{font-family:F;src:local(Arial);size-adjust:106%}</style></head></html>");
+        assert!(!local.font_face_without_display);
+        let inline = parse("<html><head><style>@font-face{font-family:S;src:url(\"data:font/woff;base64,AAAA\") format('woff')}</style></head></html>");
+        assert!(!inline.font_face_without_display);
+        let web = parse("<html><head><style>@font-face{font-family:F;src:url(/f.woff2)}</style></head></html>");
+        assert!(web.font_face_without_display);
     }
 
     #[test]

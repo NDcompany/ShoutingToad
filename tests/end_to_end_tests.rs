@@ -289,12 +289,7 @@ fn main_site(b: &str, e: &str, port: u16) -> Site {
         experimentation, philosophical contemplation, psychological characterisation, governmental decentralisation, \
         constitutional reinterpretation and indispensable organisational synchronisation";
     // Flesch reading ease in the 30-50 band.
-    let medium = "Most garden toads hide under stones during the warm part of the day and emerge after sunset to hunt. \
-        They consume slugs, beetles and other small creatures that gardeners usually consider troublesome pests in vegetable beds. \
-        A healthy pond with shallow edges, floating vegetation and some nearby cover will attract them within a season or two. \
-        Avoid using chemical treatments near the water, because amphibians absorb substances through their permeable skin remarkably easily. \
-        Leave a pile of logs or several flat stones in a shady corner so the animals can shelter during dry weather. \
-        In early spring the adults return to the same breeding location and deposit long strings of eggs among the submerged vegetation.";
+    let medium = "Most garden toads hide under stones during the warm part of the day, emerging after sunset to hunt the slugs, beetles and other small creatures that gardeners usually consider troublesome pests in vegetable beds.         A healthy pond with shallow edges, floating vegetation and some nearby cover will usually attract them within a season or two, provided that nobody uses chemical treatments near the water, because amphibians absorb substances through their permeable skin remarkably easily.         Leave a pile of logs or several flat stones in a shady corner so the animals can shelter during dry weather, and in early spring the adults will return to the same breeding location to deposit long strings of eggs among the submerged vegetation.";
     for (path, doc) in [
         ("/c/thin", g("/c/thin", "Thin content").drop("<p class=\"prose\"").body("<p>Tiny page.</p>")),
         ("/c/low", g("/c/low", "Low content").drop("<p class=\"prose\"").body(format!("<p>{}</p>", prose("low content", 100)))),
@@ -415,7 +410,9 @@ fn main_site(b: &str, e: &str, port: u16) -> Site {
     // ---- structured data
     let types = ["Product", "Offer", "LocalBusiness", "BreadcrumbList", "ListItem", "FAQPage", "QAPage", "Question", "Answer", "Event", "Recipe",
         "JobPosting", "VideoObject", "Review", "AggregateRating", "Course", "SoftwareApplication", "Dataset", "Movie", "Article", "Organization", "WebSite"];
-    let empty_entities: Vec<String> = types.iter().map(|t| format!(r#"{{"@context":"https://schema.org","@type":"{t}"}}"#)).collect();
+    let mut empty_entities: Vec<String> = types.iter().map(|t| format!(r#"{{"@context":"https://schema.org","@type":"{t}"}}"#)).collect();
+    // Offer price rules apply to a Product's offers.
+    empty_entities.push(r#"{"@context":"https://schema.org","@type":"Product","name":"Bare offer","offers":{"@type":"Offer"}}"#.to_string());
     let no_ld = "<script type=\"application/ld+json\"";
     for (path, doc) in [
         ("/sd/broken", g("/sd/broken", "Broken JSON-LD").head(ld(r#"{"@context":"https://schema.org","@type":"Thing",}"#))),
