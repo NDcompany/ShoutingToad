@@ -1,4 +1,4 @@
-//! Tools → Compare with a saved crawl: new, fixed and persisting findings and URL changes
+//! Tools -> Compare with a saved crawl: new, fixed and persisting findings and URL changes
 //! between a saved crawl (before) and the current one (after).
 
 use super::*;
@@ -133,14 +133,14 @@ impl App {
                     let d = c.score_after as i64 - c.score_before as i64;
                     ui.label(
                         RichText::new(format!(
-                            "Health {} → {} ({d:+})",
+                            "Health {} -> {} ({d:+})",
                             c.score_before, c.score_after
                         ))
                         .strong()
                         .color(if d < 0 { ISSUE } else { GOOD }),
                     );
                     ui.separator();
-                    ui.label(format!("URLs {} → {}", c.pages_before, c.pages_after));
+                    ui.label(format!("URLs {} -> {}", c.pages_before, c.pages_after));
                     ui.separator();
                     ui.label(format!(
                         "{} added · {} removed · {} changed",

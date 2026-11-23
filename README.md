@@ -34,6 +34,8 @@
 - **Internal link finder.** Finds pages that mention another page's topic without linking to it.
 - **Reports and exports.** A self-contained HTML audit report you can print to PDF, plus CSV exports of every URL, issue, inlink, outlink, image and redirect chain.
 - **Save and reopen crawls** as `.shoutingtoad` files.
+- **Crawl comparison.** Compare any two crawls: new, fixed and persisting findings per check, added and removed URLs, and changed status, indexability, titles, descriptions, H1s, canonicals, meta robots and word counts, with the health score change.
+- **Site migrations.** Proposes a redirect for every old URL (same path, then title or H1, similar content, similar URL words) with a confidence score, lets you correct it, and exports the map plus ready-to-paste Apache, Nginx, Netlify and Cloudflare rules. Then checks the live redirects for 302s, chains, 404s and wrong targets.
 - **Headless CLI** for scripts and CI pipelines, with exit codes for quality gates.
 - **No account, no limits, no telemetry.** It only talks to the site you crawl and, if you choose, your AI provider.
 
@@ -70,6 +72,9 @@ curl -fsSL https://raw.githubusercontent.com/NDcompany/ShoutingToad/main/install
 shouting-toad crawl https://example.com --out report --max-urls 5000
 shouting-toad list urls.txt --out report
 shouting-toad checks            # every check as CSV
+shouting-toad compare before.shoutingtoad after.shoutingtoad --out comparison
+shouting-toad migrate old-site.shoutingtoad new-site.shoutingtoad --out migration
+shouting-toad validate-redirects migration/redirect_map.csv --out redirect-check
 shouting-toad --help
 ```
 
@@ -83,6 +88,34 @@ Use `--fail-on high|medium|low` to exit with code 2 when the site has Issues at 
     tar -xzf st.tar.gz
     ./shouting-toad crawl "https://staging.example.com" --out seo-report --fail-on high
 ```
+
+### Fail only on new issues
+
+A site with known issues can still gate deployments: compare each crawl with the previous one and fail only on what got worse.
+
+```text
+shouting-toad crawl https://staging.example.com --out seo-report \
+  --baseline previous/crawl.shoutingtoad --fail-on-new high \
+  --summary-md seo-report/summary.md --badge seo-report/seo-badge.svg
+```
+
+This writes `comparison.html`, `comparison.csv` (per check: URLs before and after, new, fixed, persisting), `comparison_issue_urls.csv` and `url_changes.csv` next to the usual reports. `--summary-md` writes a Markdown summary for a pull request comment or `$GITHUB_STEP_SUMMARY`. A missing baseline file counts as the first run. In **Reports → CI workflow**, tick *Compare with the previous run* to get a workflow that keeps the last passing crawl in the Actions cache and uses it as the baseline.
+
+### SEO health badge
+
+`--badge seo-badge.svg` writes a badge with the health score (green from 90, red below 50). Commit or publish it and link it back here:
+
+```markdown
+[![SEO health score](seo-badge.svg)](https://github.com/NDcompany/ShoutingToad)
+```
+
+### Site migrations
+
+1. Crawl the old site and the new one (staging is fine; the host may differ) and save both crawls.
+2. `shouting-toad migrate old.shoutingtoad new.shoutingtoad --out migration` writes `redirect_map.csv` (old, new, confidence, reason) and `redirects.htaccess`, `redirects.nginx.conf`, `_redirects` (Netlify) and `cloudflare_bulk_redirects.csv`. Unmatched URLs get their closest parent page as a suggestion in the CSV but stay out of the server rules until you decide. In the app, **Tools → Migration redirect mapper** shows the same table and lets you edit any target before exporting.
+3. After launch, `shouting-toad validate-redirects redirect_map.csv --out check` crawls the old URLs and lists every one that does not 301 straight to its mapped page: temporary redirects, chains, 404s, wrong targets and broken targets. It exits with code 2 if any are wrong; pass `--crawl FILE` to check a saved crawl instead.
+
+**Tools → Compare with a saved crawl** in the app compares the open crawl with a saved one, with filters and exports.
 
 ## What it checks
 

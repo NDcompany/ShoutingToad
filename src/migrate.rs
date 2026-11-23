@@ -111,12 +111,21 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Words of the last path segment: "/blog/Green-Tree_Frogs.html" -> ["green", "tree", "frogs"].
+/// Words of the last path segment: "/blog/Green-Tree_Frogs.html" -> ["frogs", "green", "tree"].
 fn slug_tokens(u: &Url) -> Vec<String> {
     let seg = u
         .path_segments()
         .and_then(|mut s| s.rfind(|s| !s.is_empty()))
         .unwrap_or("");
+    words(seg)
+}
+
+/// Words of the whole path, to break ties between equal slugs in different sections.
+fn path_tokens(u: &Url) -> Vec<String> {
+    words(u.path())
+}
+
+fn words(seg: &str) -> Vec<String> {
     let seg = decode(seg).to_lowercase();
     let seg = match seg.rsplit_once('.') {
         Some((stem, "html" | "htm" | "php" | "asp" | "aspx" | "jsp" | "cfm" | "shtml")) => {
@@ -233,15 +242,22 @@ impl<'a> Target<'a> {
         t
     }
 
-    /// Best of several candidates by slug similarity, then content.
-    fn best_of(&self, cands: &[usize], slug: &[String]) -> (usize, f32) {
+    /// Best of several candidates by slug similarity, ties broken by whole-path similarity.
+    fn best_of(&self, cands: &[usize], slug: &[String], path: &[String]) -> (usize, (f32, f32)) {
+        let score = |i: usize| {
+            let s = dice(slug, &self.slugs[i]);
+            (s, s + 0.01 * dice(path, &path_tokens(&self.pages[i].1)))
+        };
         cands
             .iter()
-            .map(|&i| (i, dice(slug, &self.slugs[i])))
-            .fold(
-                (cands[0], -1.0),
-                |best, c| if c.1 > best.1 { c } else { best },
-            )
+            .map(|&i| (i, score(i)))
+            .fold((cands[0], (-1.0, -1.0)), |best, c| {
+                if c.1 .1 > best.1 .1 {
+                    c
+                } else {
+                    best
+                }
+            })
     }
 
     fn propose(&self, old: &Page) -> Mapping {
@@ -276,7 +292,7 @@ impl<'a> Target<'a> {
             }
             return m;
         }
-        let slug = slug_tokens(&u);
+        let (slug, path) = (slug_tokens(&u), path_tokens(&u));
         for (method, what, map, text, sure, base) in [
             (
                 Method::Title,
@@ -295,7 +311,7 @@ impl<'a> Target<'a> {
                     return m;
                 }
                 Some(c) if c.len() <= MAX_CANDIDATES => {
-                    let (i, s) = self.best_of(c, &slug);
+                    let (i, (s, _)) = self.best_of(c, &slug, &path);
                     hit(
                         &mut m,
                         i,
@@ -383,21 +399,14 @@ impl<'a> Target<'a> {
 
         // Slug: candidates share a not-too-common slug word.
         let mut seen = FxSet::default();
-        let mut best: Option<(usize, f32)> = None;
+        let mut cands = Vec::new();
         for tok in &slug {
-            let Some(c) = self.by_token.get(tok).filter(|c| c.len() <= 500) else {
-                continue;
-            };
-            for &i in c {
-                if seen.insert(i) {
-                    let s = dice(&slug, &self.slugs[i]);
-                    if best.is_none_or(|b| s > b.1) {
-                        best = Some((i, s));
-                    }
-                }
+            if let Some(c) = self.by_token.get(tok).filter(|c| c.len() <= 500) {
+                cands.extend(c.iter().copied().filter(|&i| seen.insert(i)));
             }
         }
-        if let Some((i, s)) = best.filter(|b| b.1 >= 0.5) {
+        let best = (!cands.is_empty()).then(|| self.best_of(&cands, &slug, &path));
+        if let Some((i, (s, _))) = best.filter(|b| b.1 .0 >= 0.5) {
             hit(
                 &mut m,
                 i,
@@ -763,7 +772,9 @@ pub fn validate(map: &[(String, String)], crawl: &Crawl) -> Vec<Validation> {
                 }
             }
             let p = &mut v.problems;
-            if first.status == 0 {
+            if first.blocked_by_robots {
+                p.push("blocked by robots.txt (validate with --ignore-robots)".into());
+            } else if first.status == 0 {
                 p.push(format!(
                     "no response ({})",
                     first.error.as_deref().unwrap_or("connection failed")

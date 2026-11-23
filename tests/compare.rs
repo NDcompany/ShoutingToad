@@ -614,6 +614,13 @@ fn stress_compare_and_migrate() {
     for p in b.pages.iter_mut() {
         if p.id % 20 == 7 && p.url.contains("/p/") {
             p.url = p.url.replace("/p/", "/articles/");
+            if let Some(h) = p.html.as_mut() {
+                h.canonicals = h
+                    .canonicals
+                    .iter()
+                    .map(|c| c.replace("/p/", "/articles/"))
+                    .collect();
+            }
         } else if p.id % 20 == 11 {
             if let Some(h) = p.html.as_mut() {
                 h.titles = vec![format!("Retitled page {}", p.id)];
