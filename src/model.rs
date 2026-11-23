@@ -265,11 +265,7 @@ impl Page {
     }
 
     pub fn has_directive(&self, d: &str) -> bool {
-        self.robots_directives()
-            .split([',', ';'])
-            .map(|t| t.trim())
-            .map(|t| t.rsplit(':').next().unwrap_or(t).trim())
-            .any(|t| t == d)
+        self.robots_directives().split([',', ';']).any(|t| directive_token(t) == d)
     }
 
     pub fn is_noindex(&self) -> bool {
@@ -278,6 +274,16 @@ impl Page {
 
     pub fn is_nofollow_page(&self) -> bool {
         self.has_directive("nofollow") || self.has_directive("none")
+    }
+}
+
+/// One robots directive token without its user-agent prefix: "googlebot: noindex" -> "noindex".
+/// Valued directives stay whole, so "max-image-preview:none" is not mistaken for "none".
+pub fn directive_token(token: &str) -> &str {
+    let t = token.trim();
+    match t.split_once(':') {
+        Some((k, rest)) if !["max-snippet", "max-image-preview", "max-video-preview", "unavailable_after"].contains(&k.trim()) => rest.trim(),
+        _ => t,
     }
 }
 

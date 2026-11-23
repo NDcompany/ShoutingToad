@@ -2,7 +2,7 @@
 //! so the number of checks listed is exactly the number the engine runs.
 
 use crate::audit::{hd, ih, ihd, indexable, pixel_width, self_canonical, Ctx, Kind, Priority};
-use crate::model::{HtmlData, Page, Source};
+use crate::model::{directive_token, HtmlData, Page, Source};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -58,9 +58,14 @@ macro_rules! add {
 
 // ---------------------------------------------------------------- helpers
 
-/// Real pages (not robots.txt / sitemap fetches).
+/// Real pages (not robots.txt / sitemap fetches). Sitemap files are recorded at depth 0;
+/// pages discovered through a sitemap (depth 1) are real pages.
 fn real(p: &Page) -> bool {
-    !matches!(p.source, Some(Source::Robots) | Some(Source::Sitemap))
+    match p.source {
+        Some(Source::Robots) => false,
+        Some(Source::Sitemap) => p.depth > 0,
+        _ => true,
+    }
 }
 
 fn err_kind(p: &Page) -> &'static str {
@@ -326,7 +331,7 @@ fn valid_iso_date(s: &str) -> bool {
         || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").is_ok()
         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok()
-        || chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M%:z").is_ok()
+        || chrono::DateTime::parse_from_str(&s.replace('Z', "+00:00"), "%Y-%m-%dT%H:%M%:z").is_ok()
 }
 
 // ---------------------------------------------------------------- catalogue
@@ -665,7 +670,8 @@ fn urls(v: &mut Vec<Check>) {
         "The same folder repeats in the path, a sign of relative-link loops creating infinite URLs.",
         "Fix the relative links, typically by making them root-relative.",
         |p, _| ih(p) && {
-            let segs: Vec<String> = path_of(&p.url).split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+            // Numeric segments (dates such as /2024/01/01/) repeat legitimately.
+            let segs: Vec<String> = path_of(&p.url).split('/').filter(|s| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit())).map(|s| s.to_string()).collect();
             let mut counts: HashMap<&str, usize> = HashMap::new();
             segs.iter().for_each(|s| *counts.entry(s.as_str()).or_insert(0) += 1);
             segs.windows(2).any(|w| w[0] == w[1]) || counts.values().any(|&c| c >= 3)
@@ -1081,7 +1087,7 @@ fn images(v: &mut Vec<Check>) {
         "Rename images with descriptive, hyphenated words.",
         move |p, _| image_file(p) && {
             static RE: OnceLock<Regex> = OnceLock::new();
-            let re = RE.get_or_init(|| Regex::new(r"(?i)^(img|image|dsc|dscn|dcim|photo|pic|screenshot|untitled|unnamed|whatsapp)[-_ ]?\d*|^\d+$").unwrap());
+            let re = RE.get_or_init(|| Regex::new(r"(?i)^(img|image|dsc|dscn|dcim|photo|pic|screenshot|untitled|unnamed|whatsapp)([-_ ]?\d.*)?$|^\d+$").unwrap());
             let name = path_of(&p.url).rsplit('/').next().unwrap_or("").rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or_default();
             !name.is_empty() && re.is_match(&name)
         });
@@ -1244,12 +1250,13 @@ fn directives(v: &mut Vec<Check>) {
     add!(v, "directives.x_robots_noindex", CAT, Warning, High, "Noindex via X-Robots-Tag",
         "The HTTP header carries noindex. It is easy to miss because it is not in the HTML.",
         "Make sure the server rule setting this header is intended.",
-        |p, _| p.is_internal && p.status == 200 && p.headers_all("x-robots-tag").any(|v| { let l = v.to_ascii_lowercase(); l.contains("noindex") || l.contains("none") }));
+        |p, _| p.is_internal && p.status == 200 && p.headers_all("x-robots-tag").any(|v| v.to_ascii_lowercase().split([',', ';']).any(|t| matches!(directive_token(t), "noindex" | "none"))));
     add!(v, "directives.conflicting", CAT, Issue, High, "Conflicting Directives",
         "The page says both index and noindex, or follow and nofollow. Search engines apply the most restrictive one.",
         "Keep one consistent set of directives.",
         |p, _| ih(p) && {
-            let toks: HashSet<String> = p.robots_directives().split([',', ';']).map(|t| t.trim().rsplit(':').next().unwrap_or("").trim().to_string()).collect();
+            let d = p.robots_directives();
+            let toks: HashSet<&str> = d.split([',', ';']).map(directive_token).collect();
             (toks.contains("index") && toks.contains("noindex")) || (toks.contains("follow") && toks.contains("nofollow"))
         });
     add!(v, "directives.outside_head", CAT, Issue, High, "Robots Meta Outside <head>",
@@ -1407,7 +1414,8 @@ fn hreflang(v: &mut Vec<Check>) {
         hd(p).filter(|h| !h.hreflang.is_empty())
     }
     fn self_code(p: &Page, h: &HtmlData) -> Option<String> {
-        h.hreflang.iter().find(|(_, u)| u == &p.url).map(|(c, _)| c.to_ascii_lowercase())
+        // x-default is a fallback, not the page's own language.
+        h.hreflang.iter().find(|(c, u)| u == &p.url && !c.eq_ignore_ascii_case("x-default")).map(|(c, _)| c.to_ascii_lowercase())
     }
     add!(v, "hreflang.missing_return", CAT, Issue, High, "Missing Return Links",
         "Pages this page names as alternates do not link back. Hreflang only works when the annotations are reciprocal.",
@@ -1418,7 +1426,7 @@ fn hreflang(v: &mut Vec<Check>) {
         "Use the same code for a URL everywhere it is referenced.",
         |p, x| hl(p).is_some_and(|h| {
             let Some(me) = self_code(p, h) else { return false };
-            h.hreflang.iter().any(|(_, u)| u != &p.url && x.page(u).and_then(hd).is_some_and(|t| t.hreflang.iter().any(|(c, back)| back == &p.url && c.to_ascii_lowercase() != me)))
+            h.hreflang.iter().any(|(_, u)| u != &p.url && x.page(u).and_then(hd).is_some_and(|t| t.hreflang.iter().any(|(c, back)| back == &p.url && !c.eq_ignore_ascii_case("x-default") && c.to_ascii_lowercase() != me)))
         }));
     add!(v, "hreflang.non_canonical", CAT, Issue, Medium, "Hreflang to Non-Canonical URL",
         "Alternates point at URLs that canonicalise elsewhere.",
