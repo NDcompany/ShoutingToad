@@ -546,6 +546,13 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
                 }
             }
             "main" => d.has_main = true,
+            "p" if d.lead.is_empty() => {
+                let t = text_of(el);
+                let chrome = ["nav", "header", "footer", "aside", "form"].iter().any(|n| has_ancestor(&el, n));
+                if !chrome && t.split_whitespace().count() >= 12 {
+                    d.lead = t;
+                }
+            }
             "video" | "audio" => {
                 if el.value().attr("autoplay").is_some() && (name == "audio" || el.value().attr("muted").is_none()) {
                     d.autoplay_media = true;
@@ -606,7 +613,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     d.simhash = simhash(&words);
     d.lorem_ipsum = joined.contains("lorem ipsum");
     d.text_ratio = if raw.is_empty() { 0.0 } else { norm(&text).len() as f32 / raw.len() as f32 * 100.0 };
-    let mut capped = joined;
+    let mut capped = norm(&text);
     if capped.len() > TEXT_CAP {
         let mut cut = TEXT_CAP;
         while !capped.is_char_boundary(cut) {

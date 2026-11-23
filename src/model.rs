@@ -104,8 +104,10 @@ pub struct HtmlData {
     pub content_hash: u64,
     pub simhash: u64,
     pub lorem_ipsum: bool,
-    /// Lower-cased visible text (capped) used for linking suggestions.
+    /// Visible text, whitespace-normalised and capped, used for link suggestions and offline rewrites.
     pub text: String,
+    /// First substantial paragraph of body copy (outside nav, header and footer).
+    pub lead: String,
 
     pub links: Vec<Link>,
     pub javascript_links: usize,

@@ -193,7 +193,18 @@ fn cut_words(s: &str, max: usize) -> String {
         }
         out.push_str(w);
     }
-    out.trim_end_matches([',', ';', ':', '-', '–', '|']).to_string()
+    // Prefer ending at a natural break (comma, colon, dash) if it keeps most of the text.
+    if let Some(pos) = out.rfind([',', ':', ';', '–', '—', '|']) {
+        if pos >= max * 3 / 5 {
+            out.truncate(pos);
+        }
+    }
+    let mut words: Vec<&str> = out.split_whitespace().collect();
+    const DANGLING: &[&str] = &["and", "or", "for", "of", "the", "a", "an", "to", "in", "with", "on", "at", "by", "from", "&", "small", "large", "best", "your", "our"];
+    while words.len() > 2 && words.last().is_some_and(|w| DANGLING.contains(&w.to_lowercase().as_str())) {
+        words.pop();
+    }
+    words.join(" ").trim_end_matches([',', ';', ':', '-', '–', '|']).to_string()
 }
 
 fn topic(p: &Page, brand: &str) -> String {
@@ -238,8 +249,8 @@ pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
         d.push('…');
         d
     } else {
-        // Build from the opening sentences of the page copy.
-        let text = h.map(|h| h.text.as_str()).unwrap_or("");
+        // Build from the page's lead paragraph, falling back to its opening text.
+        let text = h.map(|h| if h.lead.is_empty() { h.text.as_str() } else { h.lead.as_str() }).unwrap_or("");
         let mut d = String::new();
         for sentence in text.split_inclusive(['.', '!', '?']) {
             let s = sentence.trim();
@@ -282,11 +293,27 @@ Site name: {brand}\nURL: {}\nCurrent title: {}\nH1: {}\nCurrent meta description
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
+    // Local models on a CPU can take minutes per answer; this runs in the background.
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(300))
         .user_agent(crate::crawler::DEFAULT_UA)
         .build()
         .map_err(|e| e.to_string())
+}
+
+fn net_error(e: reqwest::Error) -> String {
+    use std::error::Error;
+    let mut msg = if e.is_timeout() { "The request timed out".to_string() } else { e.to_string() };
+    let mut src = e.source();
+    let mut last = None;
+    while let Some(s) = src {
+        last = Some(s.to_string());
+        src = s.source();
+    }
+    if let Some(l) = last {
+        msg = format!("{msg}: {l}");
+    }
+    msg
 }
 
 fn api_error(status: reqwest::StatusCode, body: &str) -> String {
@@ -321,7 +348,7 @@ pub fn complete(cfg: &AiConfig, system: &str, user: &str) -> Result<String, Stri
             if !cfg.api_key.trim().is_empty() {
                 req = req.bearer_auth(cfg.api_key.trim());
             }
-            let resp = req.send().map_err(|e| e.to_string())?;
+            let resp = req.send().map_err(net_error)?;
             let status = resp.status();
             let body = resp.text().map_err(|e| e.to_string())?;
             if !status.is_success() {
@@ -348,7 +375,7 @@ pub fn complete(cfg: &AiConfig, system: &str, user: &str) -> Result<String, Stri
                 body["fallbacks"] = json!("default");
                 req = req.header("anthropic-beta", "server-side-fallback-2026-07-01");
             }
-            let resp = req.json(&body).send().map_err(|e| e.to_string())?;
+            let resp = req.json(&body).send().map_err(net_error)?;
             let status = resp.status();
             let text = resp.text().map_err(|e| e.to_string())?;
             if !status.is_success() {
@@ -387,7 +414,7 @@ pub fn complete(cfg: &AiConfig, system: &str, user: &str) -> Result<String, Stri
                     "generationConfig": {"responseMimeType": "application/json"},
                 }))
                 .send()
-                .map_err(|e| e.to_string())?;
+                .map_err(net_error)?;
             let status = resp.status();
             let text = resp.text().map_err(|e| e.to_string())?;
             if !status.is_success() {
@@ -478,6 +505,11 @@ pub fn link_opportunities(crawl: &Crawl) -> Vec<LinkOpportunity> {
     let mut phrase_target: HashMap<String, Option<usize>> = HashMap::new();
     for (i, p) in pages.iter().enumerate() {
         let Some(h) = ihd(p) else { continue };
+        // Archive pages (tags, categories, authors) make weak link targets.
+        let path = url::Url::parse(&p.url).map(|u| u.path().to_lowercase()).unwrap_or_default();
+        if path.split('/').any(|seg| ["tag", "tags", "category", "categories", "author", "authors", "page", "search", "feed"].contains(&seg)) {
+            continue;
+        }
         let mut phrases = Vec::new();
         if let Some(h1) = h.h1.first() {
             phrases.push(clean_phrase(h1));
@@ -519,7 +551,8 @@ pub fn link_opportunities(crawl: &Crawl) -> Vec<LinkOpportunity> {
             continue;
         }
         let Some(h) = src.html.as_deref() else { continue };
-        let text = h.text.as_str();
+        let lowered = h.text.to_lowercase();
+        let text = lowered.as_str();
         let bytes = text.as_bytes();
         let mut found: HashMap<usize, (usize, usize)> = HashMap::new(); // pattern -> (count, first offset)
         for m in ac.find_iter(text) {
@@ -577,5 +610,7 @@ mod tests {
         let s = cut_words("one two three four five six seven", 15);
         assert!(s.chars().count() <= 15);
         assert_eq!(s, "one two three");
+        assert_eq!(cut_words("Brand identity design for startups and small businesses", 44), "Brand identity design for startups");
+        assert_eq!(cut_words("Web design, SEO and branding for local shops", 30), "Web design, SEO and branding");
     }
 }
