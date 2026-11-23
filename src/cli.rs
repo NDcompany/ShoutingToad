@@ -5,6 +5,7 @@ use crate::checks::{catalogue, find};
 use crate::crawler::{self, Config, Event};
 use crate::model::Crawl;
 use crate::report;
+use crate::rules;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -18,6 +19,8 @@ USAGE:
     shouting-toad crawl <URL> [OPTIONS]   Crawl a site and write reports
     shouting-toad list <FILE> [OPTIONS]   Audit only the URLs in FILE (one per line)
     shouting-toad checks                  Print every check as CSV
+    shouting-toad rules validate <PATH>…  Check rule pack files (or folders of them)
+    shouting-toad rules list <PATH>…      List the rules in rule packs
     shouting-toad --version | --help
 
 OPTIONS:
@@ -39,6 +42,8 @@ OPTIONS:
                             is found: high, medium or low
     --fail-on-check <ID>    Exit with code 2 if this check is triggered (repeatable;
                             run `shouting-toad checks` for IDs)
+    --rules <PATH>          Add the checks in a rule pack file, or in every .toml pack
+                            in a folder (repeatable; see docs/rule-packs.md)
     --quiet                 Only print the summary
 
 OUTPUT FILES:
@@ -63,6 +68,7 @@ pub fn run(args: Vec<String>) -> i32 {
             print!("{}", report::checks_csv());
             0
         }
+        Some("rules") => rules_cmd(&rest[1..]),
         Some("crawl") | Some("list") => match crawl_cmd(&rest) {
             Ok(code) => code,
             Err(e) => {
@@ -83,7 +89,8 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     let mut cfg = Config::default();
     let mut out = PathBuf::from("shoutingtoad-report");
     let mut fail_on: Option<Priority> = None;
-    let mut fail_checks: Vec<usize> = Vec::new();
+    let mut fail_check_ids: Vec<String> = Vec::new();
+    let mut rule_paths: Vec<PathBuf> = Vec::new();
     let mut quiet = false;
     let mut target: Option<String> = None;
 
@@ -126,16 +133,39 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
                     }
                 })
             }
-            "--fail-on-check" => {
-                let id = val("--fail-on-check")?;
-                fail_checks.push(find(&id).ok_or_else(|| {
-                    format!("unknown check id '{id}' (run `shouting-toad checks`)")
-                })?);
-            }
+            "--fail-on-check" => fail_check_ids.push(val("--fail-on-check")?),
+            "--rules" => rule_paths.push(PathBuf::from(val("--rules")?)),
             s if s.starts_with("--") => return Err(format!("unknown option '{s}'")),
             s => target = Some(s.to_string()),
         }
     }
+    if !rule_paths.is_empty() {
+        let (packs, problems) = rules::load_paths(&rule_paths);
+        if !problems.is_empty() {
+            let list: Vec<String> = problems.iter().map(|p| format!("  {p}")).collect();
+            return Err(format!(
+                "invalid rule pack:
+{}",
+                list.join(
+                    "
+"
+                )
+            ));
+        }
+        rules::install(&packs);
+        if !quiet {
+            let n: usize = packs.iter().map(|p| p.rules.len()).sum();
+            eprintln!("Loaded {n} rules from {} rule pack(s)", packs.len());
+        }
+    }
+    let fail_checks = fail_check_ids
+        .iter()
+        .map(|id| {
+            find(id).ok_or_else(|| {
+                format!("unknown check id '{id}' (run `shouting-toad checks` or `shouting-toad rules list`)")
+            })
+        })
+        .collect::<Result<Vec<usize>, String>>()?;
     let target = target.ok_or(if list_mode {
         "list needs a file of URLs"
     } else {
@@ -310,4 +340,64 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         return Ok(2);
     }
     Ok(0)
+}
+
+/// `rules validate <PATH>…` and `rules list <PATH>…`.
+fn rules_cmd(args: &[String]) -> i32 {
+    let (cmd, paths) = match args.split_first() {
+        Some((c, p)) if (c == "validate" || c == "list") && !p.is_empty() => {
+            (c.as_str(), p.iter().map(PathBuf::from).collect::<Vec<_>>())
+        }
+        _ => {
+            eprintln!(
+                "usage: shouting-toad rules validate <PATH>…
+       shouting-toad rules list <PATH>…"
+            );
+            return 1;
+        }
+    };
+    let (packs, problems) = rules::load_paths(&paths);
+    for p in &packs {
+        let n = p.rules.len();
+        let by = if p.author.is_empty() {
+            String::new()
+        } else {
+            format!(" by {}", p.author)
+        };
+        println!(
+            "{} ({}) {}{by}: {n} rule{} in {}",
+            p.name,
+            p.id,
+            p.version,
+            if n == 1 { "" } else { "s" },
+            p.path.display()
+        );
+        if cmd == "list" {
+            for r in &p.rules {
+                println!(
+                    "  {:<44} {:<11} {:<6} {}: {}",
+                    r.id,
+                    r.kind.label(),
+                    r.priority.label(),
+                    r.category,
+                    r.name
+                );
+            }
+        }
+    }
+    for p in &problems {
+        eprintln!("error: {p}");
+    }
+    if !problems.is_empty() {
+        eprintln!("{} problem(s) found", problems.len());
+        return 1;
+    }
+    if packs.is_empty() {
+        eprintln!("error: no rule packs found");
+        return 1;
+    }
+    if cmd == "validate" {
+        println!("All rule packs are valid.");
+    }
+    0
 }

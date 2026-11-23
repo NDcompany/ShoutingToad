@@ -6,7 +6,7 @@ use crate::model::{HtmlData, Page, Source};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError, RwLock};
 use url::Url;
 
 pub type Test = Box<dyn Fn(&Page, &Ctx<'_>) -> bool + Send + Sync>;
@@ -56,9 +56,48 @@ fn t<F: Fn(&Page, &Ctx<'_>) -> bool + Send + Sync + 'static>(f: F) -> Test {
     Box::new(f)
 }
 
+/// Every check the engine runs: the built-in ones, then any rule-pack checks
+/// installed with [`set_extra`]. Built-in indices never change.
 pub fn catalogue() -> &'static [Check] {
+    let all = *ACTIVE.read().unwrap_or_else(PoisonError::into_inner);
+    if all.is_empty() {
+        builtin()
+    } else {
+        all
+    }
+}
+
+static ACTIVE: RwLock<&'static [Check]> = RwLock::new(&[]);
+
+/// The built-in checks only.
+pub fn builtin() -> &'static [Check] {
     static C: OnceLock<Vec<Check>> = OnceLock::new();
     C.get_or_init(build)
+}
+
+/// Append `extra` checks (from rule packs) after the built-in ones, replacing earlier extras.
+/// Audits made before this call index the old catalogue: re-run them.
+// ponytail: each call leaks one catalogue (~0.3 MB), so it only happens when the packs change.
+pub fn set_extra(extra: Vec<Check>) {
+    let all: &'static [Check] = if extra.is_empty() {
+        &[]
+    } else {
+        let mut v = build();
+        v.extend(extra);
+        Box::leak(v.into_boxed_slice())
+    };
+    *ACTIVE.write().unwrap_or_else(PoisonError::into_inner) = all;
+}
+
+/// Built-in categories, then any new ones rule packs added.
+pub fn categories() -> Vec<&'static str> {
+    let mut v = CATEGORIES.to_vec();
+    for c in &catalogue()[builtin().len()..] {
+        if !v.contains(&c.category) {
+            v.push(c.category);
+        }
+    }
+    v
 }
 
 pub fn find(id: &str) -> Option<usize> {

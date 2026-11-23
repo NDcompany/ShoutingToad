@@ -9,3 +9,4 @@ pub mod model;
 pub mod parse;
 pub mod report;
 pub mod robots;
+pub mod rules;

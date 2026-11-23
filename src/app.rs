@@ -2,7 +2,7 @@
 
 use crate::ai::{self, AiConfig, LinkOpportunity, Provider, Suggestion};
 use crate::audit::{self, indexability_label, pixel_width, Audit, Kind, Priority};
-use crate::checks::{catalogue, CATEGORIES};
+use crate::checks::{catalogue, categories};
 use crate::crawler::{self, Config, Event, Handle, DEFAULT_UA};
 use crate::model::{Crawl, Page};
 use crate::report;
@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+mod rules;
 
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
@@ -55,6 +57,7 @@ struct Settings {
     theme: ThemeChoice,
     client_name: String,
     prepared_by: String,
+    rule_packs: Vec<rules::PackEntry>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -189,6 +192,7 @@ pub struct App {
     screenshot: Option<String>,
     frames: usize,
     overview_stats: OverviewStats,
+    rule_packs: rules::RulesUi,
 }
 
 /// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
@@ -217,6 +221,7 @@ impl App {
         open: Option<std::path::PathBuf>,
     ) -> Self {
         let mut app = Self::blank(cc, screenshot);
+        app.apply_rule_packs();
         if let Some(path) = open {
             app.load_project(&path);
         }
@@ -300,6 +305,7 @@ impl App {
             screenshot,
             frames: 0,
             overview_stats: OverviewStats::default(),
+            rule_packs: Default::default(),
         }
     }
 
@@ -317,6 +323,7 @@ impl App {
 
     fn start(&mut self, seeds: Vec<String>, list: bool) {
         self.stop();
+        self.apply_rule_packs();
         match crawler::start(seeds.clone(), list, self.settings.cfg.clone()) {
             Ok(h) => {
                 drop_in_background(std::mem::replace(
@@ -905,6 +912,10 @@ impl App {
                         self.show_config = true;
                         ui.close_menu();
                     }
+                    if ui.button("Rule packs…").clicked() {
+                        self.rule_packs.open = true;
+                        ui.close_menu();
+                    }
                     if ui.button("AI provider & API key…").clicked() {
                         self.show_ai_settings = true;
                         ui.close_menu();
@@ -1160,7 +1171,7 @@ impl App {
             ui.label(RichText::new(format!(
                 "Crawl a website and audit it for over 300 SEO and UX issues ({} checks across {} categories).",
                 catalogue().len(),
-                CATEGORIES.len()
+                categories().len()
             )).weak());
             ui.add_space(18.0);
             ui.label("Type a URL in the box above and press Start, or:");
@@ -1242,7 +1253,7 @@ impl App {
                     .id_salt("issues_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for category in CATEGORIES {
+                        for category in &categories() {
                             let mut items: Vec<(usize, usize)> = cat
                                 .iter()
                                 .enumerate()
@@ -1962,6 +1973,7 @@ impl App {
         self.ci_dialog(ctx);
         self.catalogue_dialog(ctx);
         self.about_dialog(ctx);
+        self.rule_packs_dialog(ctx);
     }
 
     fn config_dialog(&mut self, ctx: &egui::Context) {
@@ -2421,7 +2433,7 @@ impl App {
                             .hint_text("Search checks")
                             .desired_width(300.0),
                     );
-                    ui.label(RichText::new(format!("{} categories", CATEGORIES.len())).weak());
+                    ui.label(RichText::new(format!("{} categories", categories().len())).weak());
                 });
                 ui.separator();
                 let q = self.catalogue_search.to_lowercase();
@@ -2494,7 +2506,7 @@ impl App {
                 ui.vertical(|ui| {
                     ui.label(RichText::new("ShoutingToad SEO Spider").size(20.0).strong());
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.label(RichText::new(format!("{} checks across {} categories", catalogue().len(), CATEGORIES.len())).weak());
+                    ui.label(RichText::new(format!("{} checks across {} categories", catalogue().len(), categories().len())).weak());
                 });
             });
             ui.add_space(8.0);

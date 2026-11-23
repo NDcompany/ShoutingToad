@@ -384,6 +384,11 @@ const HEAD_ALLOWED: &[&str] = &[
 ];
 
 pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
+    parse_html_probed(raw, page_url, &[])
+}
+
+/// [`parse_html`] that also counts matches for rule-pack tests that need the DOM or raw HTML.
+pub fn parse_html_probed(raw: &str, page_url: &Url, probes: &[crate::rules::Probe]) -> HtmlData {
     static RE_STRIP: OnceLock<Regex> = OnceLock::new();
     static RE_TAG: OnceLock<Regex> = OnceLock::new();
     static RE_JS_REDIRECT: OnceLock<Regex> = OnceLock::new();
@@ -992,6 +997,7 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     d.text = capped;
     d.links.shrink_to_fit();
     d.images.shrink_to_fit();
+    d.rule_probes = crate::rules::eval_probes(probes, &doc, raw);
     d
 }
 
