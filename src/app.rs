@@ -843,6 +843,10 @@ impl App {
             self.insp = Insp::Serp;
             self.rows_dirty = true;
         }
+        if self.frames == 1 && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("ai")
+        {
+            self.show_ai_search = true;
+        }
         if self.frames == 60 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }

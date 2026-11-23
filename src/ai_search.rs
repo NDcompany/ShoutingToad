@@ -232,6 +232,9 @@ pub enum Outcome {
     Error,
     /// The normal request failed too, so there is nothing to compare with.
     Inconclusive,
+    /// Refused, but a request claiming to be Googlebot was refused too: the firewall verifies
+    /// crawlers by IP address, so the real crawler may well get through.
+    Unverified,
 }
 
 impl Outcome {
@@ -246,6 +249,7 @@ impl Outcome {
             Outcome::RateLimited => "Rate limited",
             Outcome::Error => "Error",
             Outcome::Inconclusive => "Inconclusive",
+            Outcome::Unverified => "Refused (impostor check)",
         }
     }
 
@@ -269,6 +273,34 @@ pub struct TestedPage {
     /// Challenge / error text when the normal request was refused too.
     pub problem: String,
     pub noindex: bool,
+    /// The crawl's user agent was refused, so the normal request used a browser user agent.
+    pub via_browser: bool,
+    /// A request claiming to be Googlebot was refused while the normal one worked: the firewall
+    /// checks that crawlers come from their vendor's IP addresses.
+    pub verifies_crawlers: bool,
+}
+
+impl TestedPage {
+    /// What a normal request got, for the page list in the GUI and report.
+    pub fn describe(&self) -> String {
+        if self.status == 0 {
+            return format!("normal request failed: {}", self.problem);
+        }
+        let mut s = format!(
+            "normal request HTTP {} · {} words without JavaScript",
+            self.status, self.words
+        );
+        if self.via_browser {
+            s.push_str(" · the crawl's user agent was refused, so a browser user agent was used");
+        }
+        if !self.problem.is_empty() {
+            let _ = write!(s, " · {}", self.problem);
+        }
+        if self.verifies_crawlers {
+            s.push_str(" · a request claiming to be Googlebot was refused too: this firewall verifies crawler IP addresses, so refusals below show how impostors are treated, not necessarily the real crawlers");
+        }
+        s
+    }
 }
 
 /// One bot on one tested page.
@@ -577,6 +609,41 @@ fn baseline(url: &str, r: Result<Fetched, String>) -> TestedPage {
     t
 }
 
+/// Desktop Chrome: the normal request when the site refuses the crawl's own user agent.
+const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+/// Control: no site blocks the real Googlebot on purpose, so refusing a request that only claims
+/// to be Googlebot means the firewall verifies crawler IP addresses.
+const GOOGLEBOT: Bot = Bot {
+    name: "Googlebot",
+    operator: "Google",
+    purpose: Purpose::Search,
+    ua: Some("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"),
+    may_ignore_robots: false,
+    source: "https://developers.google.com/search/docs/crawling-indexing/google-common-crawlers",
+};
+
+/// The normal request (crawl user agent, else a browser) and the Googlebot control.
+fn test_page(url: &str, fetch: &FetchFn) -> TestedPage {
+    let ok = |t: &TestedPage| t.status == 200 && t.problem.is_empty();
+    let mut t = baseline(url, fetch(url, None));
+    if !ok(&t) {
+        let b = baseline(url, fetch(url, Some(BROWSER_UA)));
+        if ok(&b) {
+            t = TestedPage {
+                via_browser: true,
+                ..b
+            };
+        }
+    }
+    if ok(&t) {
+        t.verifies_crawlers = classify(&t, url, &GOOGLEBOT, fetch(url, GOOGLEBOT.ua))
+            .outcome
+            .refused();
+    }
+    t
+}
+
 /// Compare a bot's response with the normal one.
 fn classify(base: &TestedPage, url: &str, bot: &Bot, r: Result<Fetched, String>) -> BotResult {
     let mut out = BotResult {
@@ -626,6 +693,9 @@ fn classify(base: &TestedPage, url: &str, bot: &Bot, r: Result<Fetched, String>)
     } else {
         (Outcome::Ok, String::new())
     };
+    if !matches!(out.outcome, Outcome::Ok | Outcome::LessContent) {
+        out.noindex = false;
+    }
     out
 }
 
@@ -656,9 +726,11 @@ fn parallel(
 
 /// Test every bot in [`BOTS`] on `urls` (the start page first). Robots-only tokens and bots
 /// that robots.txt keeps out are evaluated but not fetched. Roughly
-/// `urls × fetching bots + urls + 1` requests, made through `fetch` (which applies the crawl delay).
+/// `urls × (fetching bots + 2) + 1` requests, made through `fetch` (which applies the crawl delay).
+/// With `fetch_pages` false (robots.txt keeps the crawler itself out) only robots.txt is evaluated.
 pub fn test_bots(
     urls: &[String],
+    fetch_pages: bool,
     robots: Option<&Robots>,
     fetch: &FetchFn,
     stop: &AtomicBool,
@@ -674,7 +746,15 @@ pub fn test_bots(
     };
     let pages: Vec<Mutex<TestedPage>> = urls.iter().map(|_| Mutex::default()).collect();
     parallel(urls.len(), threads, stop, pause, |i| {
-        *pages[i].lock().unwrap() = baseline(&urls[i], fetch(&urls[i], None));
+        *pages[i].lock().unwrap() = if fetch_pages {
+            test_page(&urls[i], fetch)
+        } else {
+            TestedPage {
+                url: urls[i].clone(),
+                problem: "not requested: robots.txt disallows the crawl's own user agent".into(),
+                ..Default::default()
+            }
+        };
     });
     report.pages = pages.into_iter().map(|m| m.into_inner().unwrap()).collect();
 
@@ -684,7 +764,7 @@ pub fn test_bots(
         let path = path_and_query(url);
         for b in BOTS {
             let allowed = robots.is_none_or(|r| r.is_allowed_token(&path, b.name));
-            if b.ua.is_some() && (allowed || b.may_ignore_robots) {
+            if fetch_pages && b.ua.is_some() && (allowed || b.may_ignore_robots) {
                 jobs.push(rows.len());
             }
             rows.push(BotResult {
@@ -702,7 +782,10 @@ pub fn test_bots(
         let url = &urls[row.page];
         let r = fetch(url, b.ua);
         let base = &report.pages[row.page];
-        let res = classify(base, url, b, r);
+        let mut res = classify(base, url, b, r);
+        if base.verifies_crawlers && res.outcome.refused() {
+            res.outcome = Outcome::Unverified;
+        }
         *row = BotResult {
             page: row.page,
             robots_allowed: row.robots_allowed,
@@ -714,7 +797,7 @@ pub fn test_bots(
         .map(|m| m.into_inner().unwrap())
         .collect();
 
-    if !stop.load(Ordering::Relaxed) {
+    if fetch_pages && !stop.load(Ordering::Relaxed) {
         let llms = format!("{}llms.txt", origin_prefix(first));
         if let Ok(f) = fetch(&llms, None) {
             report.llms_txt_status = f.status;
@@ -988,13 +1071,16 @@ pub fn cell(b: &Bot, r: &BotResult) -> String {
 pub fn summary(r: &AiBotReport) -> String {
     let mut can = 0;
     let mut total = 0;
+    let mut unknown = 0;
     let mut blocked = Vec::new();
     for (b, row) in r.rows_for(0) {
         if b.purpose == Purpose::Training {
             continue;
         }
         total += 1;
-        if AiBotReport::blocked(b, row) {
+        if matches!(row.outcome, Outcome::Inconclusive | Outcome::Unverified) {
+            unknown += 1;
+        } else if AiBotReport::blocked(b, row) {
             let why = if row.outcome.refused() {
                 format!("{} {}", row.outcome.label().to_lowercase(), row.status)
             } else {
@@ -1010,6 +1096,13 @@ pub fn summary(r: &AiBotReport) -> String {
     );
     if !blocked.is_empty() {
         let _ = write!(s, "; blocked: {}", blocked.join(", "));
+    }
+    if unknown > 0 {
+        let _ = write!(
+            s,
+            "; {unknown} untestable from here ({})",
+            r.pages[0].describe()
+        );
     }
     let training_blocked = r
         .rows_for(0)
@@ -1069,14 +1162,8 @@ pub fn html_section(crawl: &Crawl) -> String {
     for p in &r.pages {
         let _ = write!(
             s,
-            "<li><a href=\"{u}\">{u}</a>: normal request HTTP {} · {} words without JavaScript{}</li>",
-            p.status,
-            p.words,
-            if p.problem.is_empty() {
-                String::new()
-            } else {
-                format!(" · {}", esc(&p.problem))
-            },
+            "<li><a href=\"{u}\">{u}</a>: {}</li>",
+            esc(&p.describe()),
             u = esc(&p.url)
         );
     }

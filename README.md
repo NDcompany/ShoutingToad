@@ -24,7 +24,8 @@
 ## Features
 
 - **Fast, polite crawler.** Multi-threaded, with a configurable request delay. Respects robots.txt, reads XML, RSS, Atom and text sitemaps, handles gzip and Brotli, and follows redirects, canonicals, hreflang and pagination links.
-- **441 checks across 27 categories.** Each finding comes with its type (Issue, Warning or Opportunity), a priority, what it means and how to fix it.
+- **450 checks across 28 categories.** Each finding comes with its type (Issue, Warning or Opportunity), a priority, what it means and how to fix it.
+- **AI search readiness.** Checks what AI crawlers can really fetch, not just what robots.txt says: the start page and the most-linked pages are requested with the published user agents of 18 AI crawlers (search, user-triggered and training bots from OpenAI, Anthropic, Perplexity, Google, Apple, Meta, Common Crawl and others) and compared with a normal request, so firewall and CDN blocks, bot challenges, thinner content and bot-specific noindex show up. It also flags content AI crawlers cannot see without JavaScript and scores how quotable each section of a page is.
 - **Site-wide analysis.** Finds duplicate and near-duplicate content, orphan pages, redirect chains and loops, broken internal and external links, hreflang return links, canonical chains, crawl depth and sitemap problems.
 - **Health score and overview dashboard.** See what matters first, then click any issue to list every affected URL.
 - **URL inspector.** Shows the details, issues, inlinks, outlinks, images, HTTP headers, a Google snippet preview (desktop and mobile) and the structured data of any URL.
@@ -73,7 +74,7 @@ shouting-toad checks            # every check as CSV
 shouting-toad --help
 ```
 
-Each run writes `report.html`, `issues.csv`, `issue_urls.csv`, `internal.csv`, `inlinks.csv`, `outlinks.csv`, `images.csv`, `redirects.csv` and `crawl.shoutingtoad` (which opens in the app).
+Each run writes `report.html`, `issues.csv`, `issue_urls.csv`, `internal.csv`, `inlinks.csv`, `outlinks.csv`, `images.csv`, `redirects.csv`, `ai_bots.csv` and `crawl.shoutingtoad` (which opens in the app).
 
 Use `--fail-on high|medium|low` to exit with code 2 when the site has Issues at that priority or above, or `--fail-on-check <id>` to fail on specific checks. This makes ShoutingToad an SEO quality gate for deployments. **Reports → CI workflow** in the app generates a ready-made GitHub Actions workflow; the core of it is:
 
@@ -113,6 +114,7 @@ Use `--fail-on high|medium|low` to exit with code 2 when the site has Issues at 
 | Accessibility | 13 | Language, link and button names, form labels, captions, landmarks |
 | Validation | 12 | Doctype, invalid `<head>` elements, character encoding |
 | AMP | 3 | Broken or invalid AMP links |
+| AI Search | 9 | AI search crawlers blocked by a firewall/CDN or robots.txt, user-triggered fetchers blocked, bot-specific noindex, content invisible without JavaScript, low section quotability, training-crawler policy |
 
 Run `shouting-toad checks`, or open **Help → All checks** in the app, to see every check with its explanation and fix.
 

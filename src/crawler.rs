@@ -290,18 +290,27 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
         run_workers(&sh);
     }
     if sh.cfg.ai_bots && !sh.stop.load(Ordering::Relaxed) {
-        ai_phase(&sh, site);
+        ai_phase(&sh, site, &seeds[0]);
     }
     let _ = sh.tx.send(Event::Finished);
 }
 
 /// Test what AI crawlers can fetch on the start page and the most-linked indexable pages, then
 /// resend the site info with the results. Runs on its own thread so a stop is still prompt.
-fn ai_phase(sh: &Arc<Shared>, mut site: SiteInfo) {
-    let urls = {
+/// When no page loaded (the site refuses the crawler), the start URL is still tested; when
+/// robots.txt disallows it for the crawl's own user agent, only robots.txt is evaluated.
+fn ai_phase(sh: &Arc<Shared>, mut site: SiteInfo, start: &Url) {
+    let mut urls = {
         let q = sh.queue.lock().unwrap();
         sh.ai_sample.pick(q.seen.iter(), 5)
     };
+    let start_allowed = !sh.cfg.respect_robots
+        || robots_for(sh, start)
+            .is_none_or(|r| r.is_allowed(&path_and_query(start), &sh.cfg.robots_agent()));
+    let fetch_pages = !urls.is_empty() || start_allowed;
+    if urls.is_empty() {
+        urls.push(start.to_string());
+    }
     let Some(home) = urls.first().and_then(|u| Url::parse(u).ok()) else {
         return;
     };
@@ -325,6 +334,7 @@ fn ai_phase(sh: &Arc<Shared>, mut site: SiteInfo) {
             };
             crate::ai_search::test_bots(
                 &urls,
+                fetch_pages,
                 robots.as_deref(),
                 &fetch,
                 &sh.stop,

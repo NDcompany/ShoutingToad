@@ -40,17 +40,13 @@ impl App {
         ui.label(RichText::new("Each crawler's robots.txt rules are evaluated, then the page is requested with its published user agent and compared with a normal request. Real AI crawlers also come from known IP ranges, which some firewalls check, so confirm blocks in your CDN logs.").weak());
         ui.add_space(4.0);
         for (i, p) in r.pages.iter().enumerate() {
-            let mut line = format!(
-                "Page {}: {}  ·  normal request HTTP {}  ·  {} words without JavaScript",
-                i + 1,
-                p.url,
-                p.status,
-                p.words
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("Page {}: {}  ·  {}", i + 1, p.url, p.describe()))
+                        .small(),
+                )
+                .wrap(),
             );
-            if !p.problem.is_empty() {
-                line.push_str(&format!("  ·  {}", p.problem));
-            }
-            ui.label(RichText::new(line).small());
         }
         ui.add_space(6.0);
         egui::Grid::new("ai_matrix")

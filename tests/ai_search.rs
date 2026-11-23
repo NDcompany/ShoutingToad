@@ -341,3 +341,91 @@ fn crawl_files_without_ai_fields_still_load() {
     assert_eq!(back.pages.len(), c.pages.len());
     shouting_toad::audit::run(&back);
 }
+
+#[test]
+fn refused_crawler_and_impostor_checks() {
+    // The site refuses the crawl's own user agent and anything claiming to be Googlebot or
+    // GPTBot (an IP-verifying firewall), but serves browsers and ClaudeBot.
+    let srv = Server::start(|base, _, _| {
+        let no = Route::new(403, "text/plain", "Forbidden");
+        let mut s = Site::new();
+        s.insert(
+            "/".into(),
+            Doc::good(base, "/", "Toads")
+                .route()
+                .for_ua("ShoutingToad", no.clone())
+                .for_ua("Googlebot", no.clone())
+                .for_ua("GPTBot", no),
+        );
+        s
+    });
+    let a = Audited::new(crawl(&[srv.url("/")], false, config()), &srv.base);
+    let r = a
+        .crawl
+        .site
+        .ai_bots
+        .as_ref()
+        .expect("start URL tested anyway");
+    let p = &r.pages[0];
+    a.expect(
+        p.url == a.url("/") && p.via_browser && p.status == 200,
+        "browser baseline",
+    );
+    a.expect(p.verifies_crawlers, "Googlebot impostor refused");
+    let row = |bot: &str| r.rows.iter().find(|x| x.bot == bot && x.page == 0).unwrap();
+    a.expect(
+        row("GPTBot").outcome == Outcome::Unverified,
+        "GPTBot refusal is unverified",
+    );
+    a.expect(row("ClaudeBot").outcome == Outcome::Ok, "ClaudeBot served");
+    for id in [
+        "ai.search_bot_firewall_blocked",
+        "ai.user_fetcher_blocked",
+        "ai.training_bot_firewall_only",
+    ] {
+        a.no_hit(id, "/");
+    }
+    a.finish();
+}
+
+#[test]
+fn robots_only_when_the_crawler_itself_is_disallowed() {
+    let srv = Server::start(|base, _, _| {
+        let mut s = Site::new();
+        s.insert(
+            "/robots.txt".into(),
+            Route::new(
+                200,
+                "text/plain",
+                "User-agent: *\nDisallow: /\n\nUser-agent: OAI-SearchBot\nAllow: /\n",
+            ),
+        );
+        s.insert("/".into(), Doc::good(base, "/", "Toads").route());
+        s
+    });
+    let a = Audited::new(crawl(&[srv.url("/")], false, config()), &srv.base);
+    let r = a
+        .crawl
+        .site
+        .ai_bots
+        .as_ref()
+        .expect("robots.txt still evaluated");
+    a.expect(
+        !srv.requested("/") && !srv.requested("/llms.txt"),
+        "nothing fetched",
+    );
+    let row = |bot: &str| r.rows.iter().find(|x| x.bot == bot).unwrap();
+    a.expect(row("OAI-SearchBot").robots_allowed, "OAI-SearchBot allowed");
+    a.expect(
+        !row("PerplexityBot").robots_allowed,
+        "PerplexityBot disallowed",
+    );
+    a.expect(
+        r.rows.iter().all(|x| x.outcome == Outcome::NotFetched),
+        "no fetches",
+    );
+    a.hit("ai.search_bot_robots_blocked", "/");
+    a.hit("ai.training_all_blocked", "/");
+    a.no_hit("ai.search_bot_firewall_blocked", "/");
+    a.finish();
+}
