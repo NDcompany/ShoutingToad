@@ -308,7 +308,14 @@ fn worker(sh: Arc<Shared>) {
             return;
         };
 
-        let (page, discovered) = process(&sh, &job);
+        // A panic on hostile input must not kill the worker: it would leave `active` raised and
+        // the crawl waiting forever.
+        let (page, discovered) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(&sh, &job))).unwrap_or_else(|_| {
+            let mut page = base_page(&sh, &job.url, job.depth, job.source, is_internal(&sh, &job.url));
+            page.error = Some("Internal error while processing this URL".into());
+            page.status_text = "Internal error while processing this URL".into();
+            (page, Vec::new())
+        });
         let crawled = sh.crawled.fetch_add(1, Ordering::Relaxed) + 1;
         let (queued, active) = {
             let mut q = sh.queue.lock().unwrap();

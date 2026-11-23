@@ -410,7 +410,7 @@ pub fn complete(cfg: &AiConfig, system: &str, user: &str) -> Result<String, Stri
 
 fn parse_pair(text: &str) -> Result<(String, String), String> {
     let start = text.find('{').ok_or("The model did not return JSON")?;
-    let end = text.rfind('}').ok_or("The model did not return JSON")?;
+    let end = text.rfind('}').filter(|&e| e > start).ok_or("The model did not return JSON")?;
     let v: Value = serde_json::from_str(&text[start..=end]).map_err(|e| format!("Could not read the model's JSON: {e}"))?;
     let get = |k: &str| v.get(k).and_then(|s| s.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     match (get("title"), get("description")) {
@@ -570,6 +570,7 @@ mod tests {
         let (t, d) = parse_pair("Sure!\n```json\n{\"title\": \"A\", \"description\": \"B\"}\n```").unwrap();
         assert_eq!((t.as_str(), d.as_str()), ("A", "B"));
         assert!(parse_pair("no json").is_err());
+        assert!(parse_pair("} backwards {").is_err());
     }
 
     #[test]

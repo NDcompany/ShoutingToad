@@ -423,7 +423,10 @@ pub fn run(crawl: &Crawl) -> Audit {
                         }
                         let (c, k) = (&checks[t / n_chunks], t % n_chunks);
                         let range = k * chunk..((k + 1) * chunk).min(pages.len());
-                        let hits: Vec<usize> = range.filter(|&i| (c.test)(&pages[i], ctx)).collect();
+                        // a check that panics on odd data loses only its own chunk
+                        let hits: Vec<usize> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| range.filter(|&i| (c.test)(&pages[i], ctx)).collect()))
+                                .unwrap_or_default();
                         if !hits.is_empty() {
                             out.push((t, hits));
                         }
