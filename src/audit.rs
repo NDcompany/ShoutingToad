@@ -337,7 +337,12 @@ impl Audit {
 
     /// 0-100 score: each triggered check costs points by type, priority and spread.
     pub fn health_score(&self, crawl: &Crawl) -> u32 {
-        let base = crawl.pages.iter().filter(|p| ih(p)).count().max(1) as f32;
+        let html = crawl.pages.iter().filter(|p| ih(p)).count();
+        // Nothing loaded (TLS failure, DNS error, every page 4xx/5xx): the site is not healthy.
+        if html == 0 && crawl.pages.iter().any(|p| p.is_internal && !p.blocked_by_robots) {
+            return 0;
+        }
+        let base = html.max(1) as f32;
         let cat = catalogue();
         let mut penalty = 0.0f32;
         for (i, hits) in self.triggered() {
@@ -392,4 +397,16 @@ pub fn run(crawl: &Crawl) -> Audit {
         }
     }
     Audit { hits, page_issues, inlinks: ctx.inlinks }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreachable_site_scores_zero() {
+        let page = Page { id: 1, url: "https://e.com/".into(), source: Some(Source::Seed), is_internal: true, error: Some("Connection failed: invalid peer certificate".into()), ..Default::default() };
+        let crawl = Crawl { pages: vec![page], ..Default::default() };
+        assert_eq!(run(&crawl).health_score(&crawl), 0);
+    }
 }
