@@ -102,7 +102,7 @@ impl App {
                 .strong()
                 .size(16.0),
         );
-        ui.label(RichText::new("Main content is split at headings. A section stands alone when its first sentence names the heading's topic, it does not open with this/it/they, it is 40 to 300 words and it has numbers or names. Weakest pages first.").weak());
+        ui.label(RichText::new("Main content is split at headings. Sections of 40 words or more are scored. One stands alone when its first sentence is short and answers a question heading directly, it does not open with this/it/they, it is at most 300 words and it has numbers or names. Weakest pages first.").weak());
         // Sorting 50k pages every frame is too slow: cache per crawl size.
         let id = egui::Id::new("ai_quote_rows");
         let key = (self.crawl.pages.len(), self.crawl.started.clone());
@@ -129,7 +129,7 @@ impl App {
             }
         };
         if rows.is_empty() {
-            ui.label("No indexable page has headed sections of 10 words or more.");
+            ui.label("No indexable page has headed sections of 40 words or more.");
             return;
         }
         egui::Grid::new("ai_quote")

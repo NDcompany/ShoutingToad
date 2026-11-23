@@ -95,7 +95,7 @@ fn has_ancestor(el: &ElementRef, name: &str) -> bool {
         .any(|a| a.value().as_element().is_some_and(|e| e.name() == name))
 }
 
-const BLOCKS: &[&str] = &[
+pub(crate) const BLOCKS: &[&str] = &[
     "p",
     "div",
     "li",

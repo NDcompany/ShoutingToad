@@ -297,7 +297,7 @@ impl TestedPage {
             let _ = write!(s, " · {}", self.problem);
         }
         if self.verifies_crawlers {
-            s.push_str(" · a request claiming to be Googlebot was refused too: this firewall verifies crawler IP addresses, so refusals below show how impostors are treated, not necessarily the real crawlers");
+            s.push_str(" · a request claiming to be Googlebot was refused too: this firewall verifies crawler IP addresses, so a refused AI crawler user agent shows how impostors are treated, not necessarily the real crawler");
         }
         s
     }
@@ -358,11 +358,11 @@ impl AiBotReport {
 pub struct AiData {
     /// Robots meta tags that name an AI crawler: (meta name, content).
     pub bot_meta: Vec<(String, String)>,
-    /// Main-content sections (heading + at least 10 words).
+    /// Main-content sections (a heading and at least [`MIN_SECTION_WORDS`] words).
     pub sections: u16,
     /// Sections with no quotability problem.
     pub quotable: u16,
-    /// Every problem found on any section (see [`SHORT`] …).
+    /// Every problem found on any section (see [`LONG`] …).
     pub flags: u8,
     /// Heading of the first section with a problem, and its problems.
     pub weakest: String,
@@ -513,25 +513,28 @@ fn challenge(f: &Fetched, words: usize) -> Option<String> {
             v.trim()
         ));
     }
+    // A 200 page counts only when it is nearly empty and carries a marker that appears on
+    // challenge pages alone: Cloudflare injects its challenge-platform script and Turnstile, and
+    // sites embed reCAPTCHA/hCaptcha in forms, on ordinary pages too.
     if f.status < 400 && words >= 150 {
         return None;
     }
     let b = f.body.as_str();
-    let markers: [(&str, &str); 9] = [
-        ("cf_chl_opt", "Cloudflare challenge"),
-        ("challenges.cloudflare.com", "Cloudflare challenge"),
-        ("/cdn-cgi/challenge-platform", "Cloudflare challenge"),
-        ("captcha-delivery.com", "DataDome captcha"),
-        ("_Incapsula_Resource", "Imperva challenge"),
-        ("px-captcha", "HUMAN (PerimeterX) captcha"),
-        ("g-recaptcha", "reCAPTCHA"),
-        ("h-captcha", "hCaptcha"),
-        ("sgcaptcha", "SiteGround captcha"),
+    let markers: [(&str, &str, bool); 9] = [
+        ("cf_chl_opt", "Cloudflare challenge", true),
+        ("captcha-delivery.com", "DataDome captcha", true),
+        ("_Incapsula_Resource", "Imperva challenge", true),
+        ("px-captcha", "HUMAN (PerimeterX) captcha", true),
+        ("sgcaptcha", "SiteGround captcha", true),
+        ("challenges.cloudflare.com", "Cloudflare challenge", false),
+        ("/cdn-cgi/challenge-platform", "Cloudflare challenge", false),
+        ("g-recaptcha", "reCAPTCHA", false),
+        ("h-captcha", "hCaptcha", false),
     ];
     markers
         .iter()
-        .find(|(m, _)| b.contains(m))
-        .map(|(_, what)| what.to_string())
+        .find(|(m, _, only_challenges)| (f.status >= 400 || *only_challenges) && b.contains(m))
+        .map(|(_, what, _)| what.to_string())
 }
 
 /// `directives` (a robots meta content or one X-Robots-Tag value) carries noindex/none for
@@ -776,8 +779,8 @@ pub fn test_bots(
         }
     }
     let rows_m: Vec<Mutex<BotResult>> = rows.into_iter().map(Mutex::new).collect();
-    parallel(jobs.len(), threads, stop, pause, |j| {
-        let mut row = rows_m[jobs[j]].lock().unwrap();
+    let run = |i: usize| {
+        let mut row = rows_m[i].lock().unwrap();
         let Some(b) = bot(&row.bot) else { return };
         let url = &urls[row.page];
         let r = fetch(url, b.ua);
@@ -791,7 +794,24 @@ pub fn test_bots(
             robots_allowed: row.robots_allowed,
             ..res
         };
-    });
+    };
+    // Start page first. A bot that got no answer there at all (a firewall that lets requests
+    // hang until the timeout) is not tried again on every other page.
+    let n = BOTS.len();
+    let (home, rest): (Vec<usize>, Vec<usize>) = jobs.into_iter().partition(|&i| i < n);
+    parallel(home.len(), threads, stop, pause, |k| run(home[k]));
+    let rest: Vec<usize> = rest
+        .into_iter()
+        .filter(|&i| {
+            let h = rows_m[i % n].lock().unwrap();
+            let silent = h.outcome == Outcome::Error && h.status == 0;
+            if silent {
+                rows_m[i].lock().unwrap().detail = "skipped: no response on the start page".into();
+            }
+            !silent
+        })
+        .collect();
+    parallel(rest.len(), threads, stop, pause, |k| run(rest[k]));
     report.rows = rows_m
         .into_iter()
         .map(|m| m.into_inner().unwrap())
@@ -812,23 +832,26 @@ pub fn test_bots(
 
 // ------------------------------------------------------------------ quotability
 
-/// Fewer than 40 words: too thin to answer anything on its own.
-pub const SHORT: u8 = 1;
+/// Sections under this many words (cards, teasers, labels) are not scored.
+pub const MIN_SECTION_WORDS: usize = 40;
 /// Over 300 words: an answer engine has to cut it, so split it with subheadings.
 pub const LONG: u8 = 2;
 /// Opens with "This", "It", "They"…: quoted alone, the reader does not know what it refers to.
 pub const DANGLING: u8 = 4;
-/// The first sentence does not name the heading's topic (or runs past 35 words).
+/// The heading asks a question the first sentence does not answer by name, or the first
+/// sentence runs past 40 words.
 pub const OFF_TOPIC: u8 = 8;
 /// No number, date or name anywhere in the section.
 pub const NO_FACTS: u8 = 16;
 
 pub fn flag_labels(flags: u8) -> Vec<&'static str> {
     [
-        (SHORT, "under 40 words"),
         (LONG, "over 300 words"),
         (DANGLING, "opens with this/it/they"),
-        (OFF_TOPIC, "first sentence does not answer the heading"),
+        (
+            OFF_TOPIC,
+            "first sentence does not answer the heading directly",
+        ),
         (NO_FACTS, "no numbers or names"),
     ]
     .iter()
@@ -926,19 +949,29 @@ fn has_facts(text: &str) -> bool {
     false
 }
 
-/// Problems of one section; `None` when it has under 10 words (labels, cards, widgets).
+/// "What is…?", "How do I…", "Can toads swim?": a heading that asks something.
+fn is_question(heading: &str) -> bool {
+    const ASK: &[&str] = &[
+        "what", "how", "why", "when", "where", "who", "which", "can", "does", "do", "is", "are",
+        "should", "will",
+    ];
+    heading.trim_end().ends_with('?')
+        || heading
+            .split_whitespace()
+            .next()
+            .is_some_and(|w| ASK.contains(&clean(w).as_str()))
+}
+
+/// Problems of one section; `None` under [`MIN_SECTION_WORDS`] (cards, teasers, labels).
 pub fn section_flags(heading: &str, text: &str) -> Option<u8> {
     let words = text
         .split_whitespace()
         .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
         .count();
-    if words < 10 {
+    if words < MIN_SECTION_WORDS {
         return None;
     }
     let mut f = 0;
-    if words < 40 {
-        f |= SHORT;
-    }
     if words > 300 {
         f |= LONG;
     }
@@ -950,7 +983,9 @@ pub fn section_flags(heading: &str, text: &str) -> Option<u8> {
     {
         f |= DANGLING;
     }
-    if first.split_whitespace().count() > 35 || !names_topic(heading, first) {
+    if first.split_whitespace().count() > 40
+        || (is_question(heading) && !names_topic(heading, first))
+    {
         f |= OFF_TOPIC;
     }
     if !has_facts(text) {
@@ -980,12 +1015,17 @@ pub fn quotability(body: ElementRef, out: &mut AiData) {
         None => (body, true),
     };
     let mut sections: Vec<(String, String)> = Vec::new();
-    let mut stack = vec![root.children()];
-    while let Some(children) = stack.last_mut() {
+    // Block boundaries become newlines (inline elements do not), as in the page's visible text.
+    let newline = |sections: &mut Vec<(String, String)>| {
+        if let Some((_, t)) = sections.last_mut() {
+            t.push('\n');
+        }
+    };
+    let mut stack = vec![(root.children(), true)];
+    while let Some((children, _)) = stack.last_mut() {
         let Some(child) = children.next() else {
-            stack.pop();
-            if let Some((_, t)) = sections.last_mut() {
-                t.push('\n');
+            if stack.pop().is_some_and(|(_, block)| block) {
+                newline(&mut sections);
             }
             continue;
         };
@@ -1003,11 +1043,12 @@ pub fn quotability(body: ElementRef, out: &mut AiData) {
                     let h = norm(&el.text().collect::<Vec<_>>().join(" "));
                     sections.push((h, String::new()));
                 }
-                _ => {
-                    if let Some((_, t)) = sections.last_mut() {
-                        t.push('\n');
+                name => {
+                    let block = crate::parse::BLOCKS.contains(&name);
+                    if block {
+                        newline(&mut sections);
                     }
-                    stack.push(el.children());
+                    stack.push((el.children(), block));
                 }
             }
         }
@@ -1049,7 +1090,8 @@ pub fn cell(b: &Bot, r: &BotResult) -> String {
             }
         ),
         Outcome::NotFetched if !r.robots_allowed => "Disallowed by robots.txt".into(),
-        Outcome::NotFetched => "Not tested".into(),
+        Outcome::NotFetched if r.detail.is_empty() => "Not tested".into(),
+        Outcome::NotFetched => format!("Not tested · {}", r.detail),
         Outcome::Ok => format!("{robots}OK {} · {} words", r.status, r.words),
         o => {
             let mut s = format!("{robots}{}", o.label());
@@ -1078,7 +1120,9 @@ pub fn summary(r: &AiBotReport) -> String {
             continue;
         }
         total += 1;
-        if matches!(row.outcome, Outcome::Inconclusive | Outcome::Unverified) {
+        let untested =
+            row.outcome == Outcome::NotFetched && b.ua.is_some() && !AiBotReport::blocked(b, row);
+        if untested || matches!(row.outcome, Outcome::Inconclusive | Outcome::Unverified) {
             unknown += 1;
         } else if AiBotReport::blocked(b, row) {
             let why = if row.outcome.refused() {
@@ -1276,6 +1320,10 @@ mod tests {
             page_html(400)
         );
         assert_eq!(c(fetched(200, &[], &ok)).outcome, Outcome::Ok);
+        let thin_app = "<html><body><p>Read and write stories.</p><script src=\"/cdn-cgi/challenge-platform/scripts/precursor/main.js\"></script></body></html>";
+        assert!(baseline("https://e.com/", Ok(fetched(200, &[], thin_app)))
+            .problem
+            .is_empty());
         // bot-only noindex
         let ni = "<html><head><meta name=\"GPTBot\" content=\"noindex\"></head><body>".to_string()
             + &"word ".repeat(400);
@@ -1326,9 +1374,13 @@ mod tests {
             section_flags("How much does toad food cost?", good),
             Some(0)
         );
-        let dangling = "It depends on many things that we will talk about below in some detail, so keep reading to learn everything there is to know about it and more.";
+        let dangling = "It depends on many things that we will talk about below in some detail, so keep reading to learn everything there is to know about it and more. there is a lot to say and we say it all here.";
         let f = section_flags("How much does toad food cost?", dangling).unwrap();
-        assert!(f & DANGLING != 0 && f & OFF_TOPIC != 0 && f & NO_FACTS != 0 && f & SHORT != 0);
+        assert!(f & DANGLING != 0 && f & OFF_TOPIC != 0 && f & NO_FACTS != 0);
+        // a statement heading does not need its words repeated
+        let pricing = good.replace("Toad food costs", "Plans start at");
+        assert_eq!(section_flags("Pricing", &pricing), Some(0));
+        assert_ne!(section_flags("How much is it?", &pricing), Some(0));
         assert_eq!(section_flags("Menu", "Home About"), None);
         assert_eq!(
             first_sentence("Pricing is 3.5 dollars. Next one."),
@@ -1340,7 +1392,8 @@ mod tests {
     fn quotability_splits_main_content_by_headings() {
         let html = r#"<html><body><header><h2>Site menu</h2><p>skip me entirely please because it is the header of the page</p></header>
             <main><h1>Toad care</h1><p>Toad care takes about 10 minutes a day for a healthy adult toad living indoors in a glass tank with moss and water. Clean the water daily, mist the moss, and check the tank temperature stays near 22 degrees in summer and winter.</p>
-            <h2>Feeding</h2><p>This is something we cover later in the article, and it is a big topic for every new owner who wants to learn.</p>
+            <h2>Feeding</h2><p>This is something we cover later in the article, and it is a big topic for every new owner who wants to learn. there is a lot to say about <b>food</b> and we will say all of it in time, so read on.</p>
+            <h2>Card</h2><p>Short teaser text.</p>
             <nav><h2>Related</h2><a href="/a">Other pages that we wrote about toads and frogs and newts and more</a></nav></main></body></html>"#;
         let d = crate::parse::parse_html(html, &url::Url::parse("https://e.com/").unwrap());
         assert_eq!((d.ai.sections, d.ai.quotable), (2, 1), "{:?}", d.ai);

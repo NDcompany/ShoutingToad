@@ -72,8 +72,8 @@ pub(super) fn ai_search(v: &mut Vec<Check>) {
         "Server-render or pre-render the main content so it is in the HTML response.",
         |p, _| ihd(p).is_some_and(js_rendered));
     add!(v, "ai.low_quotability", CAT, Opportunity, Low, "Few Self-Contained Sections",
-        "Fewer than half of this page's main-content sections (3 or more, each a heading and at least 10 words) stand alone. AI answers quote passages, and a passage is easiest to quote when its first sentence answers its heading and names the topic, it does not open with \"This\" or \"It\", it is 40 to 300 words long, and it contains concrete facts such as numbers or names. The weakest section is shown in the AI Search view.",
-        "Rewrite weak sections: put a direct answer that names the topic in the first sentence after each heading, replace opening pronouns with the noun, add specifics, and split very long sections.",
+        "Fewer than half of this page's main-content sections (3 or more, each a heading and at least 40 words) stand alone. AI answers quote passages, and a passage is easiest to quote when its first sentence answers a question heading directly and is not over 40 words, it does not open with \"This\" or \"It\", it is at most 300 words long, and it contains concrete facts such as numbers or names. The weakest section is shown in the AI Search view.",
+        "Rewrite weak sections: put a short, direct answer that names the topic in the first sentence after each heading, replace opening pronouns with the noun, add specifics, and split very long sections.",
         |p, _| ihd(p).is_some_and(|h| h.ai.sections >= 3 && (h.ai.quotable as usize) * 2 < h.ai.sections as usize));
     add!(v, "ai.training_all_blocked", CAT, Opportunity, Low, "All AI Training Crawlers Blocked",
         "Every AI training crawler tested (GPTBot, ClaudeBot, Google-Extended, Applebot-Extended, CCBot, Meta-ExternalAgent, Bytespider, Amazonbot) is disallowed or refused on the start page. This is a policy choice, not an error: it keeps your content out of future model training. It does not by itself remove you from AI search answers, which use separate search crawlers.",
