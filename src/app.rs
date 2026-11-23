@@ -14,6 +14,9 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod compare;
+mod migrate;
+
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
 const WARNING: Color32 = Color32::from_rgb(222, 160, 40);
 const OPPORTUNITY: Color32 = Color32::from_rgb(70, 145, 235);
@@ -189,6 +192,8 @@ pub struct App {
     screenshot: Option<String>,
     frames: usize,
     overview_stats: OverviewStats,
+    compare_ui: compare::CompareUi,
+    migrate_ui: migrate::MigrateUi,
 }
 
 /// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
@@ -300,6 +305,8 @@ impl App {
             screenshot,
             frames: 0,
             overview_stats: OverviewStats::default(),
+            compare_ui: Default::default(),
+            migrate_ui: Default::default(),
         }
     }
 
@@ -1017,6 +1024,21 @@ impl App {
                     {
                         self.run_audit();
                         ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(has, egui::Button::new("Compare with a saved crawl…"))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        self.compare_pick();
+                    }
+                    if ui
+                        .add_enabled(has, egui::Button::new("Migration redirect mapper…"))
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        self.migrate_pick();
                     }
                 });
                 ui.menu_button("Help", |ui| {
@@ -1962,6 +1984,8 @@ impl App {
         self.ci_dialog(ctx);
         self.catalogue_dialog(ctx);
         self.about_dialog(ctx);
+        self.compare_dialog(ctx);
+        self.migrate_dialog(ctx);
     }
 
     fn config_dialog(&mut self, ctx: &egui::Context) {
@@ -2388,7 +2412,8 @@ impl App {
                     }
                 });
             });
-            let yaml = report::ci_workflow(self.ci_url.trim(), self.ci_level);
+            ui.checkbox(&mut self.compare_ui.ci_baseline, "Compare with the previous run: fail only on new issues, add a job summary and badge");
+            let yaml = report::ci_workflow(self.ci_url.trim(), self.ci_level, self.compare_ui.ci_baseline);
             egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(&mut yaml.as_str()).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
             });
@@ -2403,7 +2428,11 @@ impl App {
         });
         self.show_ci = open;
         if save {
-            let yaml = report::ci_workflow(self.ci_url.trim(), self.ci_level);
+            let yaml = report::ci_workflow(
+                self.ci_url.trim(),
+                self.ci_level,
+                self.compare_ui.ci_baseline,
+            );
             self.save_file("seo-audit.yml", "yml", move |_| yaml);
         }
     }

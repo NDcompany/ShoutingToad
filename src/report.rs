@@ -24,6 +24,13 @@ fn row(cells: &[String]) -> String {
     line
 }
 
+/// One CSV line from borrowed cells.
+pub fn csv_row(cells: &[&str]) -> String {
+    let mut line = cells.iter().map(|c| csv(c)).collect::<Vec<_>>().join(",");
+    line.push('\n');
+    line
+}
+
 macro_rules! cells {
     ($($x:expr),* $(,)?) => { [$($x.to_string()),*] };
 }
@@ -672,9 +679,50 @@ footer a {{ color:inherit; }}
     )
 }
 
-/// GitHub Actions workflow that runs a headless crawl on every push and on a schedule.
-pub fn ci_workflow(url: &str, fail_on: Priority) -> String {
+/// GitHub Actions workflow that runs a headless crawl on every push and on a schedule. With
+/// `baseline`, the last passing crawl is kept in the Actions cache and the job fails only on
+/// issues that are new since then.
+pub fn ci_workflow(url: &str, fail_on: Priority, baseline: bool) -> String {
     let level = fail_on.label().to_lowercase();
+    let steps = if baseline {
+        format!(
+            r#"      - name: Restore the previous crawl
+        uses: actions/cache/restore@v4
+        with:
+          path: seo-baseline
+          key: seo-baseline-${{{{ github.run_id }}}}
+          restore-keys: seo-baseline-
+
+      - name: Crawl, audit and compare with the previous crawl
+        run: |
+          ./shouting-toad crawl "{url}" --max-urls 5000 --out seo-report \
+            --baseline seo-baseline/crawl.shoutingtoad --fail-on-new {level} \
+            --summary-md seo-report/summary.md --badge seo-report/seo-badge.svg
+
+      - name: Job summary
+        if: always()
+        run: cat seo-report/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Keep this crawl as the next baseline
+        if: success()
+        run: mkdir -p seo-baseline && cp seo-report/crawl.shoutingtoad seo-baseline/
+
+      - name: Save the baseline
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: seo-baseline
+          key: seo-baseline-${{{{ github.run_id }}}}
+"#
+        )
+    } else {
+        format!(
+            r#"      - name: Crawl and audit
+        run: |
+          ./shouting-toad crawl "{url}" --max-urls 5000 --out seo-report --fail-on {level}
+"#
+        )
+    };
     format!(
         r#"name: SEO audit (ShoutingToad)
 
@@ -696,10 +744,7 @@ jobs:
           tar -xzf shouting-toad.tar.gz
           chmod +x shouting-toad
 
-      - name: Crawl and audit
-        run: |
-          ./shouting-toad crawl "{url}" --max-urls 5000 --out seo-report --fail-on {level}
-
+{steps}
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
@@ -719,6 +764,16 @@ mod tests {
         assert_eq!(csv("plain"), "plain");
         assert_eq!(csv("a,b"), "\"a,b\"");
         assert_eq!(csv("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn ci_workflow_with_baseline() {
+        let plain = ci_workflow("https://e.com", Priority::High, false);
+        assert!(plain.contains("--fail-on high") && !plain.contains("--baseline"));
+        let y = ci_workflow("https://e.com", Priority::Medium, true);
+        assert!(y.contains("--baseline seo-baseline/crawl.shoutingtoad --fail-on-new medium"));
+        assert!(y.contains("key: seo-baseline-${{ github.run_id }}"));
+        assert!(y.contains("actions/cache/save@v4") && y.contains("$GITHUB_STEP_SUMMARY"));
     }
 
     #[test]

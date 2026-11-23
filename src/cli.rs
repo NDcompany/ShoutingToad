@@ -2,6 +2,7 @@
 
 use crate::audit::{self, Kind, Priority};
 use crate::checks::{catalogue, find};
+use crate::compare::{self, Gate};
 use crate::crawler::{self, Config, Event};
 use crate::model::Crawl;
 use crate::report;
@@ -17,6 +18,15 @@ USAGE:
     shouting-toad                         Open the desktop app
     shouting-toad crawl <URL> [OPTIONS]   Crawl a site and write reports
     shouting-toad list <FILE> [OPTIONS]   Audit only the URLs in FILE (one per line)
+    shouting-toad compare <BEFORE> <AFTER> [--out DIR]
+                                          Compare two saved crawls (.shoutingtoad)
+    shouting-toad migrate <OLD> <NEW> [--out DIR]
+                                          Propose a redirect map from an old site's
+                                          crawl to the new site's crawl
+    shouting-toad validate-redirects <MAP.csv> [--out DIR] [--crawl FILE] [OPTIONS]
+                                          Check that every old URL in MAP (old,new)
+                                          301-redirects straight to its new URL;
+                                          crawls the old URLs unless --crawl is given
     shouting-toad checks                  Print every check as CSV
     shouting-toad --version | --help
 
@@ -39,14 +49,28 @@ OPTIONS:
                             is found: high, medium or low
     --fail-on-check <ID>    Exit with code 2 if this check is triggered (repeatable;
                             run `shouting-toad checks` for IDs)
+    --baseline <FILE>       Compare with a previous crawl (.shoutingtoad) and write
+                            comparison.html and CSVs; a missing file is a first run
+    --fail-on-new <LEVEL>   With --baseline: exit with code 2 only for Issues of this
+                            priority or higher that are new since the baseline
+    --summary-md <FILE>     Write a Markdown summary (PR comment, $GITHUB_STEP_SUMMARY)
+    --badge <FILE>          Write an SEO health score badge (SVG)
     --quiet                 Only print the summary
 
+    compare also takes --fail-on-new, --summary-md and --badge.
+
 OUTPUT FILES:
-    report.html, issues.csv, issue_urls.csv, internal.csv, inlinks.csv,
-    outlinks.csv, images.csv, redirects.csv, crawl.shoutingtoad (open in the app)
+    crawl, list: report.html, issues.csv, issue_urls.csv, internal.csv, inlinks.csv,
+        outlinks.csv, images.csv, redirects.csv, crawl.shoutingtoad (open in the app)
+    compare, --baseline: comparison.html, comparison.csv (per check),
+        comparison_issue_urls.csv (new and fixed URLs), url_changes.csv
+    migrate: redirect_map.csv (old,new,confidence,reason), redirects.htaccess,
+        redirects.nginx.conf, _redirects (Netlify), cloudflare_bulk_redirects.csv
+    validate-redirects: redirect_validation.csv
 
 EXIT CODES:
-    0 success, 1 error, 2 --fail-on threshold reached";
+    0 success, 1 error, 2 --fail-on / --fail-on-new threshold reached, or
+    validate-redirects found a wrong redirect";
 
 pub fn run(args: Vec<String>) -> i32 {
     let rest: Vec<String> = args.into_iter().skip(1).collect();
@@ -63,13 +87,18 @@ pub fn run(args: Vec<String>) -> i32 {
             print!("{}", report::checks_csv());
             0
         }
-        Some("crawl") | Some("list") => match crawl_cmd(&rest) {
-            Ok(code) => code,
-            Err(e) => {
+        Some(cmd @ ("crawl" | "list" | "compare" | "migrate" | "validate-redirects")) => {
+            let result = match cmd {
+                "compare" => compare::cli(&rest),
+                "migrate" => crate::migrate::cli(&rest),
+                "validate-redirects" => crate::migrate::validate_cli(&rest),
+                _ => crawl_cmd(&rest),
+            };
+            result.unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 1
-            }
-        },
+            })
+        }
         Some(other) => {
             eprintln!("error: unknown command '{other}'\n\n{HELP}");
             1
@@ -78,12 +107,13 @@ pub fn run(args: Vec<String>) -> i32 {
     }
 }
 
-fn crawl_cmd(args: &[String]) -> Result<i32, String> {
+pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     let list_mode = args[0] == "list";
     let mut cfg = Config::default();
     let mut out = PathBuf::from("shoutingtoad-report");
     let mut fail_on: Option<Priority> = None;
     let mut fail_checks: Vec<usize> = Vec::new();
+    let mut gate = Gate::default();
     let mut quiet = false;
     let mut target: Option<String> = None;
 
@@ -114,28 +144,19 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
             "--no-resources" => cfg.check_resources = false,
             "--no-sitemaps" => cfg.crawl_sitemaps = false,
             "--quiet" | "-q" => quiet = true,
-            "--fail-on" => {
-                fail_on = Some(match val("--fail-on")?.to_lowercase().as_str() {
-                    "high" => Priority::High,
-                    "medium" => Priority::Medium,
-                    "low" => Priority::Low,
-                    other => {
-                        return Err(format!(
-                            "--fail-on must be high, medium or low (got '{other}')"
-                        ))
-                    }
-                })
-            }
+            "--fail-on" => fail_on = Some(compare::parse_level(&val("--fail-on")?)?),
             "--fail-on-check" => {
                 let id = val("--fail-on-check")?;
                 fail_checks.push(find(&id).ok_or_else(|| {
                     format!("unknown check id '{id}' (run `shouting-toad checks`)")
                 })?);
             }
+            s if gate.option(s, &mut val)? => {}
             s if s.starts_with("--") => return Err(format!("unknown option '{s}'")),
             s => target = Some(s.to_string()),
         }
     }
+    gate.check()?;
     let target = target.ok_or(if list_mode {
         "list needs a file of URLs"
     } else {
@@ -295,6 +316,7 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         );
     }
     println!("Reports written to {}", out.display());
+    let failed_new = gate.run(&crawl, &audit, &out)?;
 
     let failed_level = fail_on.is_some_and(|lvl| {
         audit
@@ -307,6 +329,10 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     std::mem::forget((crawl, audit));
     if failed_level || failed_check {
         eprintln!("Failing: issues at or above the --fail-on threshold were found.");
+        return Ok(2);
+    }
+    if failed_new {
+        eprintln!("Failing: new issues at or above the --fail-on-new threshold were found.");
         return Ok(2);
     }
     Ok(0)
