@@ -25,7 +25,7 @@ fn row(cells: &[String]) -> String {
 }
 
 macro_rules! cells {
-    ($($x:expr),* $(,)?) => { vec![$($x.to_string()),*] };
+    ($($x:expr),* $(,)?) => { [$($x.to_string()),*] };
 }
 
 /// Streaming CSV writer for the big per-URL and per-link exports: same escaping as [`row`],

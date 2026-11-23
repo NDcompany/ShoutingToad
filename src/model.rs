@@ -350,32 +350,156 @@ pub struct Crawl {
 }
 
 impl Crawl {
-    /// Gzip-compressed JSON, streamed: a 50k-URL crawl is GBs of raw JSON but ~10x smaller packed.
+    /// Gzip-compressed JSON (a 50k-URL crawl is GBs of raw JSON). Pages are serialized and
+    /// compressed in parallel chunks, each written as its own gzip member: a multi-member file
+    /// is one valid gzip stream. Members are `{…,"pages":[`, page chunks, then `]}`.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         use std::io::Write;
-        let err = |e: &dyn std::fmt::Display| format!("Could not write {}: {e}", path.display());
-        let file = std::fs::File::create(path).map_err(|e| err(&e))?;
-        let gz = flate2::write::GzEncoder::new(std::io::BufWriter::with_capacity(1 << 20, file), flate2::Compression::fast());
-        // serde_json writes a few bytes at a time; batch them before they reach the compressor.
-        let mut w = std::io::BufWriter::with_capacity(1 << 20, gz);
-        serde_json::to_writer(&mut w, self).map_err(|e| err(&e))?;
-        let gz = w.into_inner().map_err(|e| err(&e.error()))?;
-        gz.finish().and_then(|mut w| w.flush()).map_err(|e| err(&e))
+        #[derive(Serialize)]
+        struct Head<'a> {
+            start_url: &'a str,
+            started: &'a str,
+            finished: &'a str,
+            site: &'a SiteInfo,
+        }
+        // exhaustive on purpose: a new Crawl field must be added to Head too
+        let Crawl { start_url, started, finished, pages, site } = self;
+        let gz = gzip_member;
+        let write = || -> std::io::Result<()> {
+            let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+            let mut head = serde_json::to_vec(&Head { start_url, started, finished, site })?;
+            head.pop(); // closing brace: the pages follow
+            head.extend_from_slice(br#","pages":["#);
+            file.write_all(&gz(&head)?)?;
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
+            let chunks: Vec<&[Page]> = pages.chunks(256).collect();
+            for (w, wave) in chunks.chunks(threads).enumerate() {
+                let parts: Vec<std::io::Result<Vec<u8>>> = std::thread::scope(|s| {
+                    let running: Vec<_> = wave
+                        .iter()
+                        .enumerate()
+                        .map(|(k, chunk)| {
+                            s.spawn(move || {
+                                let mut json = Vec::new();
+                                for (j, p) in chunk.iter().enumerate() {
+                                    if w + k + j > 0 {
+                                        json.push(b',');
+                                    }
+                                    serde_json::to_writer(&mut json, p)?;
+                                }
+                                gz(&json)
+                            })
+                        })
+                        .collect();
+                    running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(std::io::Error::other("serializer crashed")))).collect()
+                });
+                for part in parts {
+                    file.write_all(&part?)?;
+                }
+            }
+            file.write_all(&gz(b"]}")?)?;
+            file.flush()
+        };
+        write().map_err(|e| format!("Could not write {}: {e}", path.display()))
     }
 
-    /// Reads gzip-compressed or plain JSON crawl files.
+    /// Reads gzip-compressed or plain JSON crawl files. Files written by [`Crawl::save`] are
+    /// inflated and parsed in parallel chunks.
     pub fn load(path: &std::path::Path) -> Result<Crawl, String> {
         use std::io::Read;
+        let damaged = |e: &dyn std::fmt::Display| format!("{} is damaged: {e}", path.display());
+        let not_crawl = |e: serde_json::Error| format!("{} is not a ShoutingToad crawl file: {e}", path.display());
         let mut data = std::fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        if let Some(members) = split_members(&data).filter(|m| m.len() >= 2) {
+            let inflate = |m: &[u8]| -> Result<Vec<u8>, String> {
+                let mut out = Vec::new();
+                flate2::read::GzDecoder::new(m).read_to_end(&mut out).map_err(|e| damaged(&e))?;
+                Ok(out)
+            };
+            let (head, rest) = members.split_first().unwrap_or((&members[0], &[]));
+            let (tail, chunks) = rest.split_last().unwrap_or((&members[0], &[]));
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
+            let parsed: Vec<Result<Vec<Page>, String>> = std::thread::scope(|s| {
+                let running: Vec<_> = chunks
+                    .chunks(chunks.len().div_ceil(threads).max(1))
+                    .map(|group| {
+                        s.spawn(move || {
+                            let mut pages = Vec::new();
+                            for m in group {
+                                // ",{page},{page}" (no comma on the first chunk) -> "[{page},{page}]"
+                                let mut json = inflate(m)?;
+                                match json.first() {
+                                    Some(b',') => json[0] = b'[',
+                                    _ => json.insert(0, b'['),
+                                }
+                                json.push(b']');
+                                pages.extend(serde_json::from_slice::<Vec<Page>>(&json).map_err(not_crawl)?);
+                            }
+                            Ok(pages)
+                        })
+                    })
+                    .collect();
+                running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(damaged(&"parser crashed")))).collect()
+            });
+            let mut json = inflate(head)?;
+            json.extend(inflate(tail)?);
+            let mut crawl: Crawl = serde_json::from_slice(&json).map_err(not_crawl)?;
+            for chunk in parsed {
+                crawl.pages.extend(chunk?);
+            }
+            return Ok(crawl);
+        }
         if data.starts_with(&[0x1f, 0x8b]) {
             let mut json = Vec::with_capacity(data.len() * 6);
-            flate2::read::MultiGzDecoder::new(&data[..])
-                .read_to_end(&mut json)
-                .map_err(|e| format!("{} is damaged: {e}", path.display()))?;
+            flate2::read::MultiGzDecoder::new(&data[..]).read_to_end(&mut json).map_err(|e| damaged(&e))?;
             data = json;
         }
-        serde_json::from_slice(&data).map_err(|e| format!("{} is not a ShoutingToad crawl file: {e}", path.display()))
+        serde_json::from_slice(&data).map_err(not_crawl)
     }
+}
+
+/// Gzip member whose header carries its own total length in an extra subfield ("ST"), so the
+/// loader can find every member without inflating. Members over 4 GiB get a plain header.
+fn gzip_member(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    let mut deflate = flate2::write::DeflateEncoder::new(Vec::with_capacity(data.len() / 3), flate2::Compression::fast());
+    deflate.write_all(data)?;
+    let body = deflate.finish()?;
+    let mut crc = flate2::Crc::new();
+    crc.update(data);
+    let total = 20 + body.len() + 8;
+    let mut out = Vec::with_capacity(total);
+    match u32::try_from(total) {
+        // ID1 ID2 CM=deflate FLG=FEXTRA MTIME(4) XFL OS=unknown, XLEN=8, "ST" LEN=4 total
+        Ok(t) => {
+            out.extend_from_slice(&[0x1f, 0x8b, 8, 4, 0, 0, 0, 0, 0, 0xff, 8, 0, b'S', b'T', 4, 0]);
+            out.extend_from_slice(&t.to_le_bytes());
+        }
+        Err(_) => out.extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]),
+    }
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&crc.sum().to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes()); // ISIZE is the length mod 2^32
+    Ok(out)
+}
+
+/// Members of a file written by [`gzip_member`]; `None` for any other file.
+fn split_members(data: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let h = data.get(pos..pos + 20)?;
+        if h[..4] != [0x1f, 0x8b, 8, 4] || h[10..16] != [8, 0, b'S', b'T', 4, 0] {
+            return None;
+        }
+        let len = u32::from_le_bytes([h[16], h[17], h[18], h[19]]) as usize;
+        if len < 28 {
+            return None;
+        }
+        out.push(data.get(pos..pos + len)?);
+        pos += len;
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -386,7 +510,9 @@ mod tests {
     fn save_load_round_trip_and_plain_json() {
         let link = Link { url: "https://a.test/x".into(), nofollow: true, ..Default::default() };
         let page = Page { url: "https://a.test/".into(), html: Some(Box::new(HtmlData { links: vec![link], ..Default::default() })), ..Default::default() };
-        let crawl = Crawl { start_url: "https://a.test/".into(), pages: vec![page], ..Default::default() };
+        let mut pages = vec![page];
+        pages.extend((1..5000).map(|id| Page { id, url: format!("https://a.test/{id}"), ..Default::default() }));
+        let crawl = Crawl { start_url: "https://a.test/".into(), pages, ..Default::default() };
         let dir = std::env::temp_dir().join(format!("st-model-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (gz, plain) = (dir.join("c.shoutingtoad"), dir.join("old.shoutingtoad"));
@@ -397,7 +523,14 @@ mod tests {
             let l = &back.pages[0].html.as_ref().unwrap().links[0];
             assert!(l.nofollow && !l.sponsored && l.fragment.is_none());
             assert_eq!(back.start_url, crawl.start_url);
+            assert!(back.pages.iter().enumerate().all(|(i, p)| p.id == i) && back.pages.len() == 5000);
         }
+        // a truncated or foreign file is an error, not a panic
+        let bytes = std::fs::read(&gz).unwrap();
+        std::fs::write(&plain, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(Crawl::load(&plain).is_err());
+        std::fs::write(&plain, [&[0x1f, 0x8b, 8, 4][..], b"garbage"].concat()).unwrap();
+        assert!(Crawl::load(&plain).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
