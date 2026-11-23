@@ -93,6 +93,7 @@ impl App {
                 }
             });
         ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(crate::ai_search::LEGEND).small().weak()).wrap());
         ui.label(RichText::new(llms_note(r)).small().weak());
     }
 

@@ -297,7 +297,7 @@ impl TestedPage {
             let _ = write!(s, " · {}", self.problem);
         }
         if self.verifies_crawlers {
-            s.push_str(" · a request claiming to be Googlebot was refused too: this firewall verifies crawler IP addresses, so a refused AI crawler user agent shows how impostors are treated, not necessarily the real crawler");
+            s.push_str(" · requests claiming to be Googlebot are refused too (impostor check)");
         }
         s
     }
@@ -671,7 +671,7 @@ fn classify(base: &TestedPage, url: &str, bot: &Bot, r: Result<Fetched, String>)
     out.status = f.status;
     out.words = words;
     out.noindex = noindex && !base.noindex;
-    let refused_by = || format!("{} (HTTP {})", vendor(&f.headers), f.status);
+    let refused_by = || vendor(&f.headers).to_string();
     (out.outcome, out.detail) = if !base_ok {
         (Outcome::Inconclusive, base.problem.clone())
     } else if let Some(c) = ch {
@@ -1122,7 +1122,12 @@ pub fn summary(r: &AiBotReport) -> String {
         total += 1;
         let untested =
             row.outcome == Outcome::NotFetched && b.ua.is_some() && !AiBotReport::blocked(b, row);
-        if untested || matches!(row.outcome, Outcome::Inconclusive | Outcome::Unverified) {
+        if untested
+            || matches!(
+                row.outcome,
+                Outcome::Inconclusive | Outcome::Unverified | Outcome::RateLimited
+            )
+        {
             unknown += 1;
         } else if AiBotReport::blocked(b, row) {
             let why = if row.outcome.refused() {
@@ -1162,6 +1167,9 @@ pub fn summary(r: &AiBotReport) -> String {
     );
     s
 }
+
+/// Legend for the less obvious results, for the GUI and report.
+pub const LEGEND: &str = "Refused (impostor check): a request claiming to be Googlebot was refused too, so the firewall checks that crawlers come from their vendor's IP addresses; the real crawler may well get through, so this is not reported as a block. Inconclusive: a normal request was refused too, so there is nothing to compare with. Rate limited (429) may be caused by this test's own requests.";
 
 /// Honest note on llms.txt for the GUI and report.
 pub fn llms_note(r: &AiBotReport) -> String {
@@ -1246,7 +1254,8 @@ pub fn html_section(crawl: &Crawl) -> String {
     }
     let _ = write!(
         s,
-        "</tbody></table>\n<p class=muted>{}</p>\n",
+        "</tbody></table>\n<p class=muted>{}</p>\n<p class=muted>{}</p>\n",
+        esc(LEGEND),
         esc(&llms_note(r))
     );
     s
@@ -1304,7 +1313,7 @@ mod tests {
         let r = c(fetched(403, &[("server", "cloudflare")], "denied"));
         assert_eq!(
             (r.outcome, r.detail.as_str()),
-            (Outcome::Blocked, "Cloudflare (HTTP 403)")
+            (Outcome::Blocked, "Cloudflare")
         );
         let r = c(fetched(
             403,
