@@ -582,6 +582,7 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
         todo.push_back((default.clone(), false));
     }
     let mut done: HashSet<String> = HashSet::new();
+    let mut guessed: HashSet<String> = HashSet::from([default.clone()]);
     let mut urls: Vec<String> = Vec::new();
     let mut url_set: HashSet<String> = HashSet::new();
     while let Some((sm_url, in_robots)) = todo.pop_front() {
@@ -603,7 +604,7 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
             }
         };
         // Probing /sitemap.xml is a guess; a 404 there is not a finding.
-        if !in_robots && sm_url == default && resp.status == 404 {
+        if !in_robots && guessed.contains(&sm_url) && matches!(resp.status, 404 | 410) {
             continue;
         }
         let page = resource_page(sh, &sm_url, 0, Source::Sitemap, true, &resp);
@@ -614,6 +615,16 @@ fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut 
             }
         }
         let _ = sh.tx.send(Event::Page(Box::new(page)));
+        // Search engines follow sitemap redirects (mozilla.org: /sitemap.xml -> /en-US/sitemap.xml).
+        if (300..400).contains(&resp.status) {
+            if let Some(next) = header(&resp.headers, "location").and_then(|l| Url::parse(&sm_url).ok()?.join(l.trim()).ok()) {
+                if guessed.contains(&sm_url) {
+                    guessed.insert(next.to_string());
+                }
+                todo.push_front((next.to_string(), in_robots));
+                continue;
+            }
+        }
         let mut info = SitemapInfo { url: sm_url.clone(), status: resp.status, in_robots, size: resp.body.len(), ..Default::default() };
         if resp.status == 200 {
             let mut body = resp.body.clone();

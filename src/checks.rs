@@ -1472,8 +1472,9 @@ fn hreflang(v: &mut Vec<Check>) {
     fn hl(p: &Page) -> Option<&HtmlData> {
         hd(p).filter(|h| !h.hreflang.is_empty())
     }
-    fn self_code(p: &Page, h: &HtmlData) -> Option<String> {
-        h.hreflang.iter().find(|(_, u)| u == &p.url).map(|(c, _)| c.to_ascii_lowercase())
+    /// Codes the page uses for itself (a page may be both "en" and "en-US", or x-default).
+    fn self_codes(p: &Page, h: &HtmlData) -> Vec<String> {
+        h.hreflang.iter().filter(|(_, u)| u == &p.url).map(|(c, _)| c.to_ascii_lowercase()).collect()
     }
     add!(v, "hreflang.missing_return", CAT, Issue, High, "Missing Return Links",
         "Pages this page names as alternates do not link back. Hreflang only works when the annotations are reciprocal.",
@@ -1483,8 +1484,8 @@ fn hreflang(v: &mut Vec<Check>) {
         "An alternate page links back to this page with a different language-region code than this page uses for itself.",
         "Use the same code for a URL everywhere it is referenced.",
         |p, x| hl(p).is_some_and(|h| {
-            let Some(me) = self_code(p, h) else { return false };
-            h.hreflang.iter().any(|(_, u)| u != &p.url && x.page(u).and_then(hd).is_some_and(|t| t.hreflang.iter().any(|(c, back)| back == &p.url && c.to_ascii_lowercase() != me)))
+            let me = self_codes(p, h);
+            !me.is_empty() && h.hreflang.iter().any(|(_, u)| u != &p.url && x.page(u).and_then(hd).is_some_and(|t| t.hreflang.iter().any(|(c, back)| back == &p.url && !me.contains(&c.to_ascii_lowercase()))))
         }));
     add!(v, "hreflang.non_canonical", CAT, Issue, Medium, "Hreflang to Non-Canonical URL",
         "Alternates point at URLs that canonicalise elsewhere.",
@@ -1532,9 +1533,12 @@ fn hreflang(v: &mut Vec<Check>) {
     add!(v, "hreflang.lang_mismatch", CAT, Warning, Low, "Hreflang Conflicts With HTML Lang",
         "The page's own hreflang language differs from its <html lang>.",
         "Make the two agree.",
-        |p, _| hl(p).is_some_and(|h| match (self_code(p, h), h.lang.as_deref()) {
-            (Some(c), Some(l)) if c != "x-default" && !l.is_empty() => lang_primary(&c) != lang_primary(l),
-            _ => false,
+        |p, _| hl(p).is_some_and(|h| {
+            let me: Vec<String> = self_codes(p, h).into_iter().filter(|c| c != "x-default").collect();
+            match h.lang.as_deref() {
+                Some(l) if !l.trim().is_empty() && !me.is_empty() => !me.iter().any(|c| lang_primary(c) == lang_primary(l)),
+                _ => false,
+            }
         }));
 }
 
@@ -2166,6 +2170,37 @@ mod tests {
         let crawl = crate::model::Crawl { pages: vec![page], ..Default::default() };
         let audit = crate::audit::run(&crawl);
         !audit.hits[find(id).unwrap()].is_empty()
+    }
+
+    /// URLs among several internal 200 HTML pages on which check `id` fires.
+    fn fires_on(id: &str, pages: &[(&str, &str)]) -> Vec<String> {
+        let pages: Vec<Page> = pages
+            .iter()
+            .enumerate()
+            .map(|(i, (url, html))| Page {
+                id: i + 1,
+                url: url.to_string(),
+                source: Some(if i == 0 { Source::Seed } else { Source::Link }),
+                is_internal: true,
+                status: 200,
+                content_type: "text/html".into(),
+                html: Some(Box::new(crate::parse::parse_html(html, &Url::parse(url).unwrap()))),
+                ..Default::default()
+            })
+            .collect();
+        let crawl = crate::model::Crawl { pages, ..Default::default() };
+        let audit = crate::audit::run(&crawl);
+        audit.hits[find(id).unwrap()].iter().map(|&i| crawl.pages[i].url.clone()).collect()
+    }
+
+    #[test]
+    fn page_with_two_self_codes_is_consistent() {
+        let alts = r#"<link rel="alternate" hreflang="en" href="https://e.com/en-US/"><link rel="alternate" hreflang="en-US" href="https://e.com/en-US/"><link rel="alternate" hreflang="de" href="https://e.com/de/">"#;
+        let en = format!("<html lang=\"en-US\"><head>{alts}</head><body></body></html>");
+        let de = r#"<html lang="de"><head><link rel="alternate" hreflang="en-US" href="https://e.com/en-US/"><link rel="alternate" hreflang="de" href="https://e.com/de/"></head><body></body></html>"#;
+        let pages = [("https://e.com/en-US/", en.as_str()), ("https://e.com/de/", de)];
+        assert!(fires_on("hreflang.inconsistent_return", &pages).is_empty());
+        assert!(fires_on("hreflang.lang_mismatch", &pages).is_empty());
     }
 
     fn ld(json: &str) -> String {
