@@ -30,6 +30,7 @@
 - **Health score and overview dashboard.** See what matters first, then click any issue to list every affected URL.
 - **URL inspector.** Shows the details, issues, inlinks, outlinks, images, HTTP headers, a Google snippet preview (desktop and mobile) and the structured data of any URL.
 - **List mode.** Audit just the URLs you paste in, without following links.
+- **Community rule packs.** Add your own checks as simple TOML files, or use the Shopify, WordPress, Local SEO and E-commerce packs. See [Rule packs](#rule-packs).
 - **Custom search and extraction.** Count or extract anything in the HTML with regular expressions.
 - **Title and description writer.** Suggests new titles and meta descriptions for pages that need them, using your own API key for Anthropic Claude, OpenAI or any OpenAI-compatible server (Ollama, LM Studio, OpenRouter), or Google Gemini. With no key it falls back to offline rules. Keys are never saved to disk.
 - **Internal link finder.** Finds pages that mention another page's topic without linking to it.
@@ -117,6 +118,27 @@ This writes `comparison.html`, `comparison.csv` (per check: URLs before and afte
 3. After launch, `shouting-toad validate-redirects redirect_map.csv --out check` crawls the old URLs and lists every one that does not 301 straight to its mapped page: temporary redirects, chains, 404s, wrong targets and broken targets. It exits with code 2 if any are wrong; pass `--crawl FILE` to check a saved crawl instead.
 
 **Tools → Compare with a saved crawl** in the app compares the open crawl with a saved one, with filters and exports.
+
+## Rule packs
+
+Rule packs add checks written as small TOML files: CSS selectors, regexes on the HTML, URL, headers, status codes and page metrics, combined with `all`, `any` and `not`. Their findings appear everywhere the built-in checks do, including `--fail-on-check`.
+
+```toml
+[[rule]]
+id = "old-shop-links"
+name = "Links to the old shop"
+kind = "issue"
+priority = "high"
+fix = "Link to /store/ instead."
+when = { selector = 'a[href*="shop.example.com"]' }
+```
+
+```text
+shouting-toad crawl https://example.com --rules rules/wordpress.toml
+shouting-toad rules validate my-pack.toml
+```
+
+In the app: **Configuration → Rule packs…**. Starter packs for Shopify, WordPress, Local SEO and E-commerce are in [`rules/`](rules). The [rule pack guide](docs/rule-packs.md) covers the full format, testing and sharing; publish your own pack with the GitHub topic `shoutingtoad-rules`.
 
 ## What it checks
 

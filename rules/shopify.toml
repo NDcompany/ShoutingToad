@@ -1,0 +1,124 @@
+# Shopify rule pack for ShoutingToad. Format: docs/rule-packs.md
+# Run it with:  shouting-toad crawl https://shop.example.com --rules rules/shopify.toml --max-urls 500 --delay 300
+# Shopify rate-limits fast crawlers (HTTP 429): keep --threads low and add a --delay.
+
+[pack]
+id = "shopify"
+name = "Shopify"
+version = "1.0.0"
+author = "N&D Co."
+homepage = "https://github.com/NDcompany/ShoutingToad/tree/main/rules"
+description = "Shopify-specific duplicate URLs and theme defaults: collection-scoped product URLs, variant and tag-filter pages, .myshopify.com links, missing product structured data."
+min_version = "1.0.0"
+
+[[rule]]
+id = "collection-product-links"
+name = "Links to collection-scoped product URLs"
+category = "Links"
+kind = "warning"
+priority = "low"
+description = "The page links (with relative URLs, as Shopify themes do) to products as /collections/<collection>/products/<product>. Shopify serves every product at /products/<product> and again under each collection it is in, so crawlers fetch the same product many times and internal link signals are split between URLs that canonicalise elsewhere."
+fix = "In the theme's product card or grid snippet, link to product.url instead of product.url | within: collection (search the theme code for 'within')."
+when = { selector = 'a[href*="/collections/"][href*="/products/"]:not([href^="http"]):not([href^="//"])' }
+
+[[rule]]
+id = "collection-product-indexable"
+name = "Collection-scoped product URL is indexable"
+category = "Canonicals"
+kind = "issue"
+priority = "medium"
+description = "A /collections/<collection>/products/<product> URL is indexable: it has no canonical, or a canonical to itself. It duplicates /products/<product> and every other collection path of the same product."
+fix = "Make the theme output <link rel=\"canonical\" href=\"{{ canonical_url }}\"> in theme.liquid. Shopify's canonical_url for these pages is the plain /products/ URL."
+scope = "indexable"
+when = { url = '/collections/[^/?#]+/products/[^/?#]+' }
+
+[[rule]]
+id = "variant-url-indexable"
+name = "?variant= URL is indexable"
+category = "Canonicals"
+kind = "warning"
+priority = "medium"
+description = "A product URL with a ?variant= parameter is indexable on its own, so every variant is a duplicate of the product page."
+fix = "Use {{ canonical_url }} for the canonical tag (it drops the variant parameter), and avoid linking to ?variant= URLs from collection pages."
+scope = "indexable"
+when = { url = '[?&]variant=\d+' }
+
+[[rule]]
+id = "tag-filter-indexable"
+name = "Tag-filtered collection page is indexable"
+category = "Content"
+kind = "warning"
+priority = "low"
+description = "Collection pages filtered by a tag (/collections/<collection>/<tag>) are indexable. Shopify's default robots.txt only blocks combinations of tags (+), so single-tag pages are open to crawlers and are mostly thin copies of the collection."
+fix = "Add a noindex for tag-filtered collections in theme.liquid ({% if current_tags %}<meta name=\"robots\" content=\"noindex, follow\">{% endif %}), or give the tag pages that matter their own collections."
+scope = "indexable"
+when = [
+  { url = '/collections/[^/?#]+/[^/?#]+' },
+  { not = { url = '/collections/[^/?#]+/products/' } },
+]
+
+[[rule]]
+id = "blog-tag-indexable"
+name = "Blog tag page is indexable"
+category = "Content"
+kind = "opportunity"
+priority = "low"
+description = "Shopify blog tag pages (/blogs/<blog>/tagged/<tag>) list excerpts of posts that already have their own pages, so they are thin, near-duplicate pages."
+fix = "Noindex tag pages in the blog template ({% if current_tags %} … noindex …), unless a tag page has its own introduction."
+scope = "indexable"
+when = { url = '/blogs/[^/?#]+/tagged/' }
+
+[[rule]]
+id = "vendor-type-pages"
+name = "Automatic vendor or product-type page is indexable"
+category = "Content"
+kind = "warning"
+priority = "low"
+description = "Shopify generates /collections/vendors?q= and /collections/types?q= pages for every vendor and product type. They have no description of their own and are not blocked by the default robots.txt."
+fix = "Stop linking to them (product templates often link the vendor), or noindex them in theme.liquid when collection.handle is 'vendors' or 'types'. Create real collections for vendors that deserve a page."
+scope = "indexable"
+when = { url = '/collections/(vendors|types)\?' }
+
+[[rule]]
+id = "product-no-schema"
+name = "Product page without Product structured data"
+category = "Structured Data"
+kind = "warning"
+priority = "medium"
+description = "This /products/ page has no Product or ProductGroup structured data (JSON-LD or microdata), so it is not eligible for product rich results such as price, availability and reviews in Google."
+fix = "Add <script type=\"application/ld+json\">{{ product | structured_data }}</script> to the product template (Shopify's own themes such as Dawn do this), or use a schema app."
+when = [
+  { url = '/products/[^/?#]+/?(\?|$)' },
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(Product|ProductGroup)"', exists = false },
+  { selector = '[itemtype*="schema.org/Product"]', exists = false },
+]
+
+[[rule]]
+id = "myshopify-links"
+name = "Links to the .myshopify.com domain"
+category = "Links"
+kind = "issue"
+priority = "medium"
+description = "The page links to the store's .myshopify.com address. That host serves the same store, so these links leak crawlers and visitors to a duplicate domain."
+fix = "Replace hard-coded .myshopify.com links in menus, pages and theme settings with relative links or the primary domain."
+when = { selector = 'a[href*=".myshopify.com"]' }
+
+[[rule]]
+id = "myshopify-canonical"
+name = "Canonical points to the .myshopify.com domain"
+category = "Canonicals"
+kind = "issue"
+priority = "high"
+description = "The canonical tag names the .myshopify.com address instead of the store's primary domain, telling search engines to index the wrong host."
+fix = "Set the primary domain under Settings → Domains, and output the canonical with {{ canonical_url }} rather than a hard-coded URL."
+when = { selector = 'link[rel="canonical"]', attr = "href", matches = '\.myshopify\.com' }
+
+[[rule]]
+id = "powered-by-link"
+name = "'Powered by Shopify' footer link"
+category = "Links"
+kind = "opportunity"
+priority = "low"
+description = "The theme still shows the default 'Powered by Shopify' footer link (to shopify.com?utm_campaign=poweredby). Most stores remove it: it sends visitors away and looks unfinished."
+fix = "In the theme editor's 'Edit default theme content', search for 'Powered by Shopify' and clear it, or remove {{ powered_by_link }} from the footer section."
+when = { selector = 'a[href*="utm_campaign=poweredby"]' }

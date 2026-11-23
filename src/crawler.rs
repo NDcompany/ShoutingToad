@@ -1,7 +1,7 @@
 //! Multi-threaded spider. Fetches URLs, parses HTML and streams [`Page`]s out.
 
 use crate::model::{Page, RobotsInfo, SiteInfo, SitemapInfo, Source};
-use crate::parse::{decode_body, parse_html};
+use crate::parse::{decode_body, parse_html_probed};
 use crate::robots::Robots;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,8 @@ struct Shared {
     custom_search: Option<Regex>,
     custom_extract: Option<Regex>,
     ai_sample: crate::ai_search::Sampler,
+    /// Rule-pack tests evaluated at parse time, fixed for the whole crawl.
+    rules: Option<Arc<crate::rules::Active>>,
     tx: Sender<Event>,
 }
 
@@ -213,6 +215,7 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
         exclude: opt_regex(&cfg.exclude, "Exclude")?,
         custom_search: opt_regex(&cfg.custom_search, "Custom search")?,
         custom_extract: opt_regex(&cfg.custom_extract, "Custom extraction")?,
+        rules: crate::rules::active(),
         delay: Duration::from_millis(cfg.delay_ms),
         cfg,
         list_mode,
@@ -251,10 +254,11 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
     } else {
         None
     };
-    let Some((site, sitemap_urls)) = setup else {
+    let Some((mut site, sitemap_urls)) = setup else {
         let _ = sh.tx.send(Event::Finished);
         return;
     };
+    site.rule_probes = sh.rules.iter().flat_map(|a| a.keys()).collect();
     let _ = sh.tx.send(Event::Site(Box::new(site.clone())));
 
     {
@@ -1164,7 +1168,8 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
             .take(10)
             .collect();
     }
-    let data = parse_html(&text, &url);
+    let probes = sh.rules.as_ref().map_or(&[][..], |a| &a.probes[..]);
+    let data = parse_html_probed(&text, &url, probes);
 
     // Error pages are parsed for reporting but their links are not followed.
     if resp.status == 200 {

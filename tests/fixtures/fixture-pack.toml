@@ -1,0 +1,154 @@
+# Test pack for tests/rules.rs: one rule per condition type, each with a fixture page it
+# should fire on and pages it must not fire on.
+
+[pack]
+id = "fixture"
+name = "Fixture"
+version = "0.1.0"
+author = "ShoutingToad tests"
+homepage = "https://github.com/NDcompany/ShoutingToad"
+description = "Every condition type once."
+min_version = "1.0"
+
+[[rule]]
+id = "sel-exists"
+name = "Promo box present"
+category = "Fixture Checks"
+kind = "issue"
+priority = "high"
+description = "A div.promo element is on the page."
+fix = "Remove the promo box."
+when = { selector = 'div.promo' }
+
+[[rule]]
+id = "sel-missing"
+name = "No main landmark"
+kind = "warning"
+when = { selector = 'main', exists = false }
+
+[[rule]]
+id = "sel-count"
+name = "Three or more H2s"
+kind = "opportunity"
+priority = "low"
+when = { selector = 'h2', count = '>= 3' }
+
+[[rule]]
+id = "sel-text"
+name = "Price shown as zero"
+when = { selector = 'p.price', matches = '^\$0(\.00)?$' }
+
+[[rule]]
+id = "sel-attr"
+name = "WordPress generator tag"
+category = "Security"
+when = { selector = 'meta[name="generator"]', attr = "content", matches = 'WordPress \d' }
+
+[[rule]]
+id = "html-regex"
+name = "Legacy tracker comment"
+when = { html = 'BEGIN-LEGACY-TRACKER' }
+
+[[rule]]
+id = "header-exists"
+name = "X-Powered-By header"
+when = { header = 'X-Powered-By' }
+
+[[rule]]
+id = "header-missing"
+name = "No X-Frame-Options header"
+when = { header = 'x-frame-options', exists = false }
+
+[[rule]]
+id = "header-regex"
+name = "Old Apache"
+when = { header = 'server', matches = '(?i)apache/2\.2' }
+
+[[rule]]
+id = "status"
+name = "410 Gone"
+scope = "internal"
+when = { status = 410 }
+
+[[rule]]
+id = "url"
+name = "Session id in URL"
+when = { url = '[?&]sessionid=' }
+
+[[rule]]
+id = "content-type"
+name = "PDF document"
+scope = "internal"
+when = { content_type = '^application/pdf' }
+
+[[rule]]
+id = "word-count"
+name = "Under 50 words"
+when = { word_count = '< 50' }
+
+[[rule]]
+id = "title-length"
+name = "Title over 70 characters"
+when = { title_length = '> 70' }
+
+[[rule]]
+id = "description-length"
+name = "No meta description"
+when = { description_length = 0 }
+
+[[rule]]
+id = "h1-count"
+name = "No H1"
+when = { h1_count = 0 }
+
+[[rule]]
+id = "response-ms"
+name = "Slower than 400 ms"
+when = { response_ms = '> 400' }
+
+[[rule]]
+id = "size"
+name = "Over 100 KB"
+when = { size = '> 100000' }
+
+[[rule]]
+id = "depth"
+name = "Three clicks deep"
+when = { depth = '>= 3' }
+
+[[rule]]
+id = "inlinks"
+name = "Five or more inlinks"
+when = { inlinks = '>= 5' }
+
+[[rule]]
+id = "outlinks"
+name = "Over 20 links"
+when = { outlinks = '> 20' }
+
+[[rule]]
+id = "images"
+name = "Three or more images"
+when = { images = '>= 3' }
+
+[[rule]]
+id = "combo"
+name = "Combinators"
+when = { all = [ { url = '/combo' }, { any = [ { selector = 'h6' }, { html = 'NEVER-THERE' } ] }, { not = { selector = 'table' } } ] }
+
+[[rule]]
+id = "scope-images"
+name = "PNG image"
+scope = "images"
+when = { url = '\.png$' }
+
+[[rule]]
+id = "scope-indexable"
+name = "Indexable noindex test page"
+scope = "indexable"
+when = { url = '/noindexed' }
+
+[[rule]]
+id = "never"
+name = "Never fires"
+when = { html = 'THIS-TEXT-IS-ON-NO-PAGE' }

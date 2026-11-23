@@ -1,0 +1,126 @@
+# Local SEO rule pack for ShoutingToad. Format: docs/rule-packs.md
+# For sites of businesses with a physical location or service area.
+# Run it with:  shouting-toad crawl https://example.com --rules rules/local-seo.toml
+
+[pack]
+id = "local-seo"
+name = "Local SEO"
+version = "1.0.0"
+author = "N&D Co."
+homepage = "https://github.com/NDcompany/ShoutingToad/tree/main/rules"
+description = "Checks for local businesses: LocalBusiness structured data, click-to-call links, address and map on the contact page, thin location pages."
+min_version = "1.0.0"
+
+[[rule]]
+id = "home-no-localbusiness-schema"
+name = "Home page has no LocalBusiness structured data"
+category = "Structured Data"
+kind = "warning"
+priority = "medium"
+description = "The home page has no JSON-LD of type LocalBusiness or one of its subtypes (Restaurant, Dentist, Plumber, Store…). This markup tells search engines the business name, address, phone number and opening hours, which feed local results and the knowledge panel."
+fix = "Add LocalBusiness JSON-LD (the most specific subtype that fits) to the home page with name, address, telephone, openingHoursSpecification, geo and url. Keep it identical to your Google Business Profile."
+when = [
+  { url = '^https?://[^/?#]+/?$' },
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(LocalBusiness|AnimalShelter|AutomotiveBusiness|AutoBodyShop|AutoDealer|AutoPartsStore|AutoRental|AutoRepair|AutoWash|GasStation|MotorcycleDealer|MotorcycleRepair|ChildCare|Dentist|DryCleaningOrLaundry|EmergencyService|EmploymentAgency|EntertainmentBusiness|AmusementPark|ArtGallery|Casino|ComedyClub|MovieTheater|NightClub|FinancialService|AccountingService|BankOrCreditUnion|InsuranceAgency|FoodEstablishment|Bakery|BarOrPub|Brewery|CafeOrCoffeeShop|Distillery|FastFoodRestaurant|IceCreamShop|Restaurant|Winery|HealthAndBeautyBusiness|BeautySalon|DaySpa|HairSalon|HealthClub|NailSalon|TattooParlor|HomeAndConstructionBusiness|Electrician|GeneralContractor|HVACBusiness|HousePainter|Locksmith|MovingCompany|Plumber|RoofingContractor|LegalService|Attorney|Notary|LodgingBusiness|BedAndBreakfast|Campground|Hostel|Hotel|Motel|Resort|MedicalBusiness|MedicalClinic|Optician|Pharmacy|Physician|ProfessionalService|RealEstateAgent|RecyclingCenter|SelfStorage|SportsActivityLocation|BowlingAlley|ExerciseGym|GolfCourse|SportsClub|Store|[A-Z][A-Za-z]*Store|TravelAgency)"', exists = false },
+  { selector = '[itemtype*="schema.org/LocalBusiness"]', exists = false },
+]
+
+[[rule]]
+id = "localbusiness-no-geo"
+name = "LocalBusiness markup without geo coordinates"
+category = "Structured Data"
+kind = "opportunity"
+priority = "low"
+description = "The page has LocalBusiness structured data but no geo property. Google recommends geo (latitude and longitude, at least 5 decimal places) so the business is placed exactly on the map."
+fix = "Add \"geo\": {\"@type\": \"GeoCoordinates\", \"latitude\": …, \"longitude\": …} to the LocalBusiness JSON-LD."
+when = [
+  { selector = 'script[type="application/ld+json"]', matches = '"@type"\s*:\s*(\[[^\]]*)?"(LocalBusiness|AutomotiveBusiness|AutoDealer|AutoRepair|Dentist|FoodEstablishment|Restaurant|CafeOrCoffeeShop|Bakery|BarOrPub|HealthAndBeautyBusiness|HomeAndConstructionBusiness|Plumber|Electrician|LegalService|Attorney|LodgingBusiness|Hotel|MedicalBusiness|ProfessionalService|RealEstateAgent|Store)"' },
+  { selector = 'script[type="application/ld+json"]', matches = '"geo"\s*:', exists = false },
+]
+
+[[rule]]
+id = "home-no-click-to-call"
+name = "Home page has no click-to-call link"
+category = "Local SEO"
+kind = "opportunity"
+priority = "low"
+description = "The home page has no tel: link. Most local searches happen on phones, where a tappable phone number is the quickest way for a customer to reach the business."
+fix = "Link the phone number in the header or hero: <a href=\"tel:+13035550123\">(303) 555-0123</a>."
+when = [
+  { url = '^https?://[^/?#]+/?$' },
+  { selector = 'a[href^="tel:" i]', exists = false },
+]
+
+[[rule]]
+id = "contact-no-click-to-call"
+name = "Contact page has no click-to-call link"
+category = "Local SEO"
+kind = "warning"
+priority = "low"
+description = "This contact page has no tel: link, so visitors on phones cannot call with a tap."
+fix = "Show the phone number as a link: <a href=\"tel:+13035550123\">(303) 555-0123</a>."
+when = [
+  { url = '(?i)/contact' },
+  { selector = 'a[href^="tel:" i]', exists = false },
+]
+
+[[rule]]
+id = "contact-no-address-markup"
+name = "Contact page has no machine-readable address"
+category = "Local SEO"
+kind = "opportunity"
+priority = "medium"
+description = "This contact page has no <address> element, no PostalAddress in its structured data and no microdata address. A street address in plain text is fine for people, but marking it up states the name, address and phone (NAP) unambiguously for search engines."
+fix = "Wrap the address in <address>, or add LocalBusiness JSON-LD with a PostalAddress (streetAddress, addressLocality, postalCode, addressCountry) that matches your Google Business Profile exactly."
+when = [
+  { url = '(?i)/contact' },
+  { selector = 'address', exists = false },
+  { selector = 'script[type="application/ld+json"]', matches = 'PostalAddress|"streetAddress"', exists = false },
+  { selector = '[itemprop="address"], [itemprop="streetAddress"]', exists = false },
+]
+
+[[rule]]
+id = "contact-no-map"
+name = "Contact page has no map"
+category = "Local SEO"
+kind = "opportunity"
+priority = "low"
+description = "This contact page neither embeds nor links to Google Maps. A map (or a directions link) helps visitors find the business and ties the page to its map listing."
+fix = "Embed the Google Maps listing of the business (Share → Embed a map) or link to it (Share → Copy link)."
+when = [
+  { url = '(?i)/contact' },
+  { selector = 'iframe[src*="google.com/maps"], iframe[src*="maps.google."], a[href*="google.com/maps"], a[href*="maps.google."], a[href*="goo.gl/maps"], a[href*="maps.app.goo.gl"], a[href*="g.page/"]', exists = false },
+]
+
+[[rule]]
+id = "tel-no-country-code"
+name = "Click-to-call number without country code"
+category = "Local SEO"
+kind = "opportunity"
+priority = "low"
+description = "A tel: link uses a local number (tel:303-555-0123) instead of the international form (tel:+13035550123). Local numbers fail for visitors calling from abroad or on a foreign SIM, and the + form is the one RFC 3966 defines for global numbers."
+fix = "Write tel: links in international format: tel:+ then country code and number, digits only (the visible text can stay local)."
+when = { selector = 'a[href^="tel:" i]', attr = "href", matches = '(?i)^tel:\s*[^+\s]' }
+
+[[rule]]
+id = "tel-with-letters"
+name = "Click-to-call link contains letters"
+category = "Local SEO"
+kind = "warning"
+priority = "low"
+description = "A tel: link contains letters, such as a vanity number (tel:1-800-FLOWERS). tel: numbers may only hold digits and separators, so phones may refuse or misdial it."
+fix = "Put the digits in the link (tel:+18003569377) and keep the vanity spelling only in the visible text."
+when = { selector = 'a[href^="tel:" i]', attr = "href", matches = '(?i)^tel:[^;a-z]*[a-z]' }
+
+[[rule]]
+id = "thin-location-page"
+name = "Thin location or service-area page"
+category = "Content"
+kind = "warning"
+priority = "low"
+description = "A location or service-area page has fewer than 300 words. Near-identical city pages that only swap the place name are treated by Google as doorway pages."
+fix = "Give each location page unique content: the address and map, opening hours, staff, local projects or reviews, directions and parking."
+when = [
+  { url = '(?i)/(locations?|service-areas?|areas-we-serve|areas-served)/[^/?#]+/?$' },
+  { word_count = '< 300' },
+]

@@ -172,6 +172,8 @@ pub struct Ctx<'a> {
     ok_urls_lower: FxMap<String, usize>,
     start_id: Option<usize>,
     redirect_targets: HashSet<&'a str>,
+    /// Per installed rule-pack test: its slot in this crawl's `HtmlData::rule_probes`.
+    pub rule_slots: Vec<Option<usize>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -252,6 +254,7 @@ impl<'a> Ctx<'a> {
             ok_urls_lower,
             start_id,
             redirect_targets,
+            rule_slots: crate::rules::slots(&crawl.site.rule_probes),
         };
         // When the start URL redirects (http -> https, bare -> www), site-level checks belong to the final page.
         if let Some(seed) = pages.iter().find(|p| p.source == Some(Source::Seed)) {
@@ -298,6 +301,7 @@ impl<'a> Ctx<'a> {
             ok_urls_lower: FxMap::default(),
             start_id: None,
             redirect_targets: Default::default(),
+            rule_slots: crate::rules::slots(&crawl.site.rule_probes),
         }
     }
 

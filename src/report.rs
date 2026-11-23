@@ -2,7 +2,7 @@
 
 use crate::ai::{LinkOpportunity, Suggestion};
 use crate::audit::{ih, indexability_label, pixel_width, Audit, Kind, Priority};
-use crate::checks::{catalogue, CATEGORIES};
+use crate::checks::{catalogue, categories};
 use crate::model::Crawl;
 use std::collections::HashSet;
 use std::fmt::{Display, Write};
@@ -517,7 +517,8 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
         .unwrap_or_else(|| crawl.start_url.clone());
 
     let mut cats = String::new();
-    for c in CATEGORIES {
+    let all_cats = categories();
+    for c in &all_cats {
         let mut n = [0usize; 3];
         for (i, _) in audit.triggered().filter(|(i, _)| cat[*i].category == *c) {
             n[cat[i].kind as usize] += 1;
@@ -675,7 +676,7 @@ footer a {{ color:inherit; }}
         s3 = status_counts[3],
         s4 = status_counts[4],
         checks = cat.len(),
-        cat_count = CATEGORIES.len(),
+        cat_count = all_cats.len(),
         version = env!("CARGO_PKG_VERSION"),
         ai = crate::ai_search::html_section(crawl),
     )

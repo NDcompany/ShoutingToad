@@ -172,6 +172,9 @@ pub struct HtmlData {
     /// AI crawler meta tags and section quotability.
     #[serde(default)]
     pub ai: crate::ai_search::AiData,
+    /// Rule-pack selector and raw-HTML tests: match counts, in the order of `SiteInfo::rule_probes`.
+    #[serde(default, skip_serializing_if = "<[u16]>::is_empty")]
+    pub rule_probes: Box<[u16]>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -406,6 +409,9 @@ pub struct SiteInfo {
     /// AI crawler access test (None when it was not run).
     #[serde(default)]
     pub ai_bots: Option<crate::ai_search::AiBotReport>,
+    /// Keys of the rule-pack tests evaluated on every HTML page of this crawl.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_probes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
