@@ -139,7 +139,8 @@ impl<'a> Ctx<'a> {
         let by_id = pages.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         let mut inlinks = vec![Vec::new(); pages.len()];
         for (si, p) in pages.iter().enumerate() {
-            if let Some(h) = &p.html {
+            // Only pages whose links are followed (internal 200 HTML); error pages' links are not.
+            if let Some(h) = hd(p) {
                 for (li, l) in h.links.iter().enumerate() {
                     if let Some(&ti) = by_url.get(l.url.as_str()) {
                         if ti != si {

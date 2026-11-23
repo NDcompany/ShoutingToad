@@ -266,7 +266,7 @@ pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
             d.push_str(s);
         }
         if d.chars().count() < 70 {
-            d = cut_words(&format!("{topic}. {}", text), 150);
+            d = cut_words(format!("{topic}. {text}").trim(), 150);
         }
         let mut chars = d.chars();
         match chars.next() {

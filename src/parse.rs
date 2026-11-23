@@ -158,7 +158,8 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     let re_strip = RE_STRIP.get_or_init(|| Regex::new(r"(?is)<!--.*?-->|<script\b.*?</script>|<style\b.*?</style>").unwrap());
     let re_tag = RE_TAG.get_or_init(|| Regex::new(r"(?i)<([a-z][a-z0-9-]*)").unwrap());
     let re_js_redirect = RE_JS_REDIRECT.get_or_init(|| {
-        Regex::new(r"(?:window|document|top|self)\.location(?:\.href)?\s*=[^=]|location\.(?:replace|assign)\s*\(").unwrap()
+        // The object prefix is optional: a bare `location.href = …` redirects too.
+        Regex::new(r"(?:^|[^\w$.]|(?:window|document|top|self)\.)location(?:\.href)?\s*=[^=]|location\.(?:replace|assign)\s*\(").unwrap()
     });
     let re_font_face = RE_FONT_FACE.get_or_init(|| Regex::new(r"(?is)@font-face\s*\{[^}]*\}").unwrap());
 
@@ -217,6 +218,8 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     }
 
     let mut id_counts: HashMap<String, usize> = HashMap::new();
+    // <a name="x"> is also a valid #x bookmark target.
+    let mut anchor_names: Vec<String> = Vec::new();
     let mut deprecated: HashSet<String> = HashSet::new();
 
     for el in doc.root_element().descendants().filter_map(ElementRef::wrap) {
@@ -224,6 +227,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
         let name = el.value().name();
         let in_head = has_ancestor(&el, "head");
 
+        if let Some(n) = el.value().attr("name").filter(|_| name == "a") {
+            anchor_names.push(n.to_string());
+        }
         if let Some(id) = el.value().attr("id") {
             *id_counts.entry(id.to_string()).or_insert(0) += 1;
         }
@@ -583,8 +589,9 @@ pub fn parse_html(raw: &str, page_url: &Url) -> HtmlData {
     }
 
     d.duplicate_ids = id_counts.values().filter(|&&c| c > 1).map(|c| c - 1).sum();
-    let mut ids: Vec<String> = id_counts.into_keys().collect();
+    let mut ids: Vec<String> = id_counts.into_keys().chain(anchor_names).collect();
     ids.sort();
+    ids.dedup();
     ids.truncate(5000);
     d.ids = ids;
     let mut dep: Vec<String> = deprecated.into_iter().collect();

@@ -237,7 +237,7 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
             if q.seen.len() >= sh.cfg.max_urls {
                 break;
             }
-            if is_internal(&sh, u) && q.seen.insert(u.clone()) {
+            if is_internal(&sh, u) && wanted(&sh, u) && q.seen.insert(u.clone()) {
                 q.jobs.push_back(Job { url: u.clone(), depth: 1, source: Source::Sitemap });
             }
         }
@@ -310,10 +310,21 @@ fn is_internal(sh: &Shared, url: &str) -> bool {
     let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_string())) else {
         return false;
     };
-    if sh.internal_hosts.contains(&host) {
+    if sh.internal_hosts.iter().any(|h| same_site(h, &host)) {
         return true;
     }
     sh.cfg.crawl_subdomains && (host == sh.root_domain || host.ends_with(&format!(".{}", sh.root_domain)))
+}
+
+/// www and non-www are one site, as the checks treat them, so a start URL that
+/// redirects to its www (or bare) host keeps crawling.
+fn same_site(a: &str, b: &str) -> bool {
+    a.trim_start_matches("www.") == b.trim_start_matches("www.")
+}
+
+/// Internal URL passes the include and exclude patterns.
+fn wanted(sh: &Shared, u: &str) -> bool {
+    sh.include.as_ref().is_none_or(|re| re.is_match(u)) && sh.exclude.as_ref().is_none_or(|re| !re.is_match(u))
 }
 
 fn throttle(sh: &Shared) {
@@ -408,8 +419,22 @@ fn decompress(encoding: &str, raw: Vec<u8>, limit: usize) -> Vec<u8> {
 
 fn describe_error(e: reqwest::Error) -> String {
     use std::error::Error;
+    // rustls reports handshake failures as io::ErrorKind::InvalidData inside the connect error.
+    // The io errors nest through get_ref(), not source().
+    let tls = std::iter::successors(e.source(), |&s| s.source()).any(|s| {
+        let mut io = s.downcast_ref::<std::io::Error>();
+        while let Some(i) = io {
+            if i.kind() == std::io::ErrorKind::InvalidData {
+                return true;
+            }
+            io = i.get_ref().and_then(|r| r.downcast_ref::<std::io::Error>());
+        }
+        false
+    });
     let mut msg = if e.is_timeout() {
         "Timeout".to_string()
+    } else if e.is_connect() && tls {
+        "SSL/TLS error".to_string()
     } else if e.is_connect() {
         "Connection failed".to_string()
     } else {
@@ -429,7 +454,7 @@ fn describe_error(e: reqwest::Error) -> String {
 }
 
 fn robots_for(sh: &Shared, url: &Url) -> Option<Robots> {
-    let key = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+    let key = url.origin().ascii_serialization();
     if let Some(r) = sh.robots.lock().unwrap().get(&key) {
         return r.clone();
     }
@@ -439,7 +464,7 @@ fn robots_for(sh: &Shared, url: &Url) -> Option<Robots> {
 
 /// Fetch robots.txt for the URL's host, emit it as a page, and cache the rules.
 fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> Option<Robots> {
-    let key = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+    let key = url.origin().ascii_serialization();
     let robots_url = format!("{key}/robots.txt");
     let mut current = robots_url.clone();
     let mut redirected = false;
@@ -503,11 +528,12 @@ fn valid_lastmod(s: &str) -> bool {
         || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
         || chrono::NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d").is_ok()
         || (s.len() == 4 && s.parse::<u32>().is_ok())
-        || chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M%:z").is_ok()
+        // W3C datetime allows minute precision with a Z designator (2026-11-01T10:00Z).
+        || chrono::DateTime::parse_from_str(&s.replace('Z', "+00:00"), "%Y-%m-%dT%H:%M%:z").is_ok()
 }
 
 fn fetch_sitemaps(sh: &Shared, start: &Url, robots: Option<&Robots>, site: &mut SiteInfo) -> Vec<String> {
-    let base = format!("{}://{}", start.scheme(), start.host_str().unwrap_or(""));
+    let base = start.origin().ascii_serialization();
     let declared: Vec<String> = robots.map(|r| r.sitemaps.clone()).unwrap_or_default();
     let mut todo: VecDeque<(String, bool)> = declared.iter().map(|s| (s.clone(), true)).collect();
     let default = format!("{base}/sitemap.xml");
@@ -765,16 +791,12 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
         };
         let d = page.html.as_ref().unwrap();
         let follow_links = !sh.list_mode && next_depth <= sh.cfg.max_depth && (!page_nofollow || sh.cfg.follow_nofollow);
-        let wanted = |u: &str| -> bool {
-            let path_ok = sh.include.as_ref().is_none_or(|re| re.is_match(u)) && sh.exclude.as_ref().is_none_or(|re| !re.is_match(u));
-            path_ok
-        };
         for l in &d.links {
             if l.nofollow && !sh.cfg.follow_nofollow {
                 continue;
             }
             if is_internal(sh, &l.url) {
-                if follow_links && wanted(&l.url) {
+                if follow_links && wanted(sh, &l.url) {
                     found.push(Job { url: l.url.clone(), depth: next_depth, source: Source::Link });
                 }
             } else if sh.cfg.check_external {
@@ -803,7 +825,7 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
                 .chain(d.rel_next.iter().chain(d.rel_prev.iter()).map(|u| (u, Source::Pagination)))
                 .chain(d.amphtml.iter().map(|u| (u, Source::Amp)));
             for (u, src) in related {
-                if is_internal(sh, u) {
+                if is_internal(sh, u) && next_depth <= sh.cfg.max_depth && wanted(sh, u) {
                     found.push(Job { url: u.clone(), depth: next_depth, source: src });
                 }
             }
@@ -812,4 +834,25 @@ fn process(sh: &Shared, job: &Job) -> (Page, Vec<Job>) {
         page.html = Some(Box::new(data));
     }
     (page, found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn www_and_bare_host_are_one_site() {
+        assert!(same_site("example.com", "www.example.com"));
+        assert!(same_site("www.example.com", "example.com"));
+        assert!(!same_site("example.com", "shop.example.com"));
+        assert!(!same_site("example.com", "example.org"));
+    }
+
+    #[test]
+    fn lastmod_formats() {
+        for ok in ["2026", "2026-11", "2026-11-01", "2026-11-01T10:00Z", "2026-11-01T10:00+05:30", "2026-11-01T10:00:00Z"] {
+            assert!(valid_lastmod(ok), "{ok}");
+        }
+        assert!(!valid_lastmod("23/11/2026"));
+    }
 }
