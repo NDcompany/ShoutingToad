@@ -5,6 +5,8 @@ use crate::checks::{catalogue, find};
 use crate::crawler::{self, Config, Event};
 use crate::model::Crawl;
 use crate::report;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -168,30 +170,50 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     }
     crawl.finished = chrono::Local::now().to_rfc3339();
     crawl.pages.sort_by_key(|p| p.id);
+    let crawl_secs = started.elapsed().as_secs_f32();
 
+    let t_audit = Instant::now();
     let audit = audit::run(&crawl);
+    let audit_secs = t_audit.elapsed().as_secs_f32();
+    let t_write = Instant::now();
     std::fs::create_dir_all(&out).map_err(|e| format!("could not create {}: {e}", out.display()))?;
-    let write = |name: &str, data: String| -> Result<(), String> {
-        std::fs::write(out.join(name), data).map_err(|e| format!("could not write {name}: {e}"))
-    };
-    write("report.html", report::html_report(&crawl, &audit, "", ""))?;
-    write("issues.csv", report::issues_csv(&crawl, &audit))?;
-    write("issue_urls.csv", report::issue_urls_csv(&crawl, &audit))?;
-    write("internal.csv", report::internal_csv(&crawl, &audit))?;
-    write("inlinks.csv", report::inlinks_csv(&crawl, &audit))?;
-    write("outlinks.csv", report::outlinks_csv(&crawl))?;
-    write("images.csv", report::images_csv(&crawl))?;
-    write("redirects.csv", report::redirects_csv(&crawl))?;
-    crawl.save(&out.join("crawl.shoutingtoad"))?;
+    // The exports are independent and the per-link ones reach hundreds of MB at 50k+ URLs:
+    // write them in parallel, streaming straight to disk.
+    let file = |name: &str| File::create(out.join(name)).map(|f| BufWriter::with_capacity(1 << 20, f));
+    let file = &file;
+    let (c, a, project) = (&crawl, &audit, out.join("crawl.shoutingtoad"));
+    type Export<'a> = (&'static str, Box<dyn FnOnce() -> std::io::Result<()> + Send + 'a>);
+    let exports: Vec<Export> = vec![
+        ("report.html", Box::new(move || file("report.html")?.write_all(report::html_report(c, a, "", "").as_bytes()))),
+        ("issues.csv", Box::new(move || file("issues.csv")?.write_all(report::issues_csv(c, a).as_bytes()))),
+        ("issue_urls.csv", Box::new(move || report::issue_urls_csv_to(file("issue_urls.csv")?, c, a).map(drop))),
+        ("internal.csv", Box::new(move || report::internal_csv_to(file("internal.csv")?, c, a).map(drop))),
+        ("inlinks.csv", Box::new(move || report::inlinks_csv_to(file("inlinks.csv")?, c, a).map(drop))),
+        ("outlinks.csv", Box::new(move || report::outlinks_csv_to(file("outlinks.csv")?, c).map(drop))),
+        ("images.csv", Box::new(move || report::images_csv_to(file("images.csv")?, c).map(drop))),
+        ("redirects.csv", Box::new(move || report::redirects_csv_to(file("redirects.csv")?, c).map(drop))),
+        ("crawl.shoutingtoad", Box::new(move || c.save(&project).map_err(std::io::Error::other))),
+    ];
+    std::thread::scope(|s| {
+        let running: Vec<_> = exports.into_iter().map(|(name, f)| (name, s.spawn(f))).collect();
+        running.into_iter().try_for_each(|(name, h)| match h.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(format!("could not write {name}: {e}")),
+            Err(_) => Err(format!("could not write {name}: the export crashed")),
+        })
+    })?;
+    let write_secs = t_write.elapsed().as_secs_f32();
 
     let cat = catalogue();
     let count = |k: Kind| audit.triggered().filter(|(i, _)| cat[*i].kind == k).count();
     println!(
-        "\nCrawled {} URLs in {:.1}s. Health score: {}/100",
+        "\nCrawled {} URLs in {:.1}s ({:.0} URLs/s). Health score: {}/100",
         crawl.pages.len(),
-        started.elapsed().as_secs_f32(),
+        crawl_secs,
+        crawl.pages.len() as f32 / crawl_secs.max(0.001),
         audit.health_score(&crawl)
     );
+    println!("Audit took {audit_secs:.1}s, writing reports took {write_secs:.1}s");
     println!(
         "{} issues, {} warnings, {} opportunities ({} checks run)",
         count(Kind::Issue),
@@ -209,6 +231,9 @@ fn crawl_cmd(args: &[String]) -> Result<i32, String> {
 
     let failed_level = fail_on.is_some_and(|lvl| audit.triggered().any(|(i, _)| cat[i].kind == Kind::Issue && cat[i].priority <= lvl));
     let failed_check = fail_checks.iter().any(|&i| !audit.hits[i].is_empty());
+    // ponytail: the process exits right after this; freeing millions of small allocations one
+    // by one takes ~10s at 50k URLs, so leave it to the OS.
+    std::mem::forget((crawl, audit));
     if failed_level || failed_check {
         eprintln!("Failing: issues at or above the --fail-on threshold were found.");
         return Ok(2);

@@ -115,16 +115,20 @@ impl Robots {
 /// robots.txt pattern match: `*` = any sequence, trailing `$` = end anchor.
 fn pattern_matches(pattern: &str, path: &str) -> bool {
     match pattern.strip_suffix('$') {
-        Some(p) => glob_full(p.as_bytes(), path.as_bytes()),
-        None => glob_full(format!("{pattern}*").as_bytes(), path.as_bytes()),
+        Some(p) => glob(p.as_bytes(), path.as_bytes(), false),
+        None => glob(pattern.as_bytes(), path.as_bytes(), true),
     }
 }
 
-/// Whole-string match where `*` matches any run of bytes.
-fn glob_full(pat: &[u8], s: &[u8]) -> bool {
+/// Whole-string match where `*` matches any run of bytes. `prefix` acts as an implicit
+/// trailing `*` (without allocating `pattern*` for every rule and URL).
+fn glob(pat: &[u8], s: &[u8], prefix: bool) -> bool {
     let (mut p, mut i) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while i < s.len() {
+        if prefix && p == pat.len() {
+            return true;
+        }
         if p < pat.len() && pat[p] == b'*' {
             star = Some((p, i));
             p += 1;
@@ -181,6 +185,18 @@ Disallow: /private/
         assert!(!r.is_allowed("/wp-admin/x", "shoutingtoad"));
         assert!(!r.is_allowed("/private/x", "shoutingtoad"));
         assert!(r.is_allowed("/blog/", "shoutingtoad"));
+    }
+
+    #[test]
+    fn implicit_trailing_wildcard() {
+        let r = Robots::parse("User-agent: *
+Disallow: /a*b
+Disallow: /exact$
+Disallow: /dir/
+");
+        for (path, allowed) in [("/axxb", false), ("/axxbzz", false), ("/ax", true), ("/exact", false), ("/exactly", true), ("/dir/x", false), ("/dir", true), ("/", true)] {
+            assert_eq!(r.is_allowed(path, "x"), allowed, "{path}");
+        }
     }
 
     #[test]

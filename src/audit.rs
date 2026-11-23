@@ -4,6 +4,47 @@ use crate::checks::{catalogue, Check};
 use crate::model::{Crawl, HtmlData, Page, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// FxHash (as used in rustc): much faster than SipHash for the URL lookups the link checks
+/// do millions of times. Keys come from the crawl itself, so HashDoS resistance is not needed.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut rest = bytes;
+        while let Some((c, r)) = rest.split_first_chunk::<8>() {
+            self.add(u64::from_le_bytes(*c));
+            rest = r;
+        }
+        for &b in rest {
+            self.add(b as u64);
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.add(i as u64);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+impl FxHasher {
+    fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+pub type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub type FxSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
@@ -116,19 +157,19 @@ pub fn pixel_width(s: &str, font_px: f32) -> usize {
 
 pub struct Ctx<'a> {
     pub crawl: &'a Crawl,
-    by_url: HashMap<&'a str, usize>,
-    by_id: HashMap<usize, usize>,
+    by_url: FxMap<&'a str, usize>,
+    by_id: FxMap<usize, usize>,
     /// Per page: (source page index, link index in source's links).
     pub inlinks: Vec<Vec<(usize, usize)>>,
-    titles: HashMap<&'a str, usize>,
-    descs: HashMap<&'a str, usize>,
-    keywords: HashMap<&'a str, usize>,
-    h1s: HashMap<&'a str, usize>,
-    h2s: HashMap<&'a str, usize>,
-    hashes: HashMap<u64, usize>,
-    near_dup: HashSet<usize>,
-    sitemap: HashSet<&'a str>,
-    ok_urls_lower: HashMap<String, usize>,
+    titles: FxMap<&'a str, usize>,
+    descs: FxMap<&'a str, usize>,
+    keywords: FxMap<&'a str, usize>,
+    h1s: FxMap<&'a str, usize>,
+    h2s: FxMap<&'a str, usize>,
+    hashes: FxMap<u64, usize>,
+    near_dup: FxSet<usize>,
+    sitemap: FxSet<&'a str>,
+    ok_urls_lower: FxMap<String, usize>,
     start_id: Option<usize>,
     redirect_targets: HashSet<&'a str>,
 }
@@ -136,7 +177,7 @@ pub struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     pub fn new(crawl: &'a Crawl) -> Ctx<'a> {
         let pages = &crawl.pages;
-        let by_url: HashMap<&str, usize> = pages.iter().enumerate().map(|(i, p)| (p.url.as_str(), i)).collect();
+        let by_url: FxMap<&str, usize> = pages.iter().enumerate().map(|(i, p)| (p.url.as_str(), i)).collect();
         let by_id = pages.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         let mut inlinks = vec![Vec::new(); pages.len()];
         for (si, p) in pages.iter().enumerate() {
@@ -151,19 +192,19 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        let mut titles = HashMap::new();
-        let mut descs = HashMap::new();
-        let mut keywords = HashMap::new();
-        let mut h1s = HashMap::new();
-        let mut h2s = HashMap::new();
-        let mut hashes = HashMap::new();
-        let mut ok_urls_lower: HashMap<String, usize> = HashMap::new();
+        let mut titles = FxMap::default();
+        let mut descs = FxMap::default();
+        let mut keywords = FxMap::default();
+        let mut h1s = FxMap::default();
+        let mut h2s = FxMap::default();
+        let mut hashes = FxMap::default();
+        let mut ok_urls_lower: FxMap<String, usize> = FxMap::default();
         for p in pages {
             if ih(p) {
                 *ok_urls_lower.entry(p.url.to_lowercase()).or_insert(0) += 1;
             }
             let Some(h) = ihd(p) else { continue };
-            let bump = |m: &mut HashMap<&'a str, usize>, v: Option<&'a String>| {
+            let bump = |m: &mut FxMap<&'a str, usize>, v: Option<&'a String>| {
                 if let Some(v) = v.filter(|v| !v.trim().is_empty()) {
                     *m.entry(v.as_str()).or_insert(0) += 1;
                 }
@@ -201,6 +242,28 @@ impl<'a> Ctx<'a> {
     /// The page has internal links pointing at it, directly or through a redirect.
     pub fn linked(&self, p: &Page) -> bool {
         !self.inlinks_of(p).is_empty() || self.redirect_targets.contains(p.url.as_str())
+    }
+
+    /// Only the URL index, for callers that just need [`Ctx::page`] / [`Ctx::follow`]
+    /// (building the full context at 50k pages costs seconds).
+    pub fn urls_only(crawl: &'a Crawl) -> Ctx<'a> {
+        Ctx {
+            crawl,
+            by_url: crawl.pages.iter().enumerate().map(|(i, p)| (p.url.as_str(), i)).collect(),
+            by_id: crawl.pages.iter().enumerate().map(|(i, p)| (p.id, i)).collect(),
+            inlinks: Vec::new(),
+            titles: FxMap::default(),
+            descs: FxMap::default(),
+            keywords: FxMap::default(),
+            h1s: FxMap::default(),
+            h2s: FxMap::default(),
+            hashes: FxMap::default(),
+            near_dup: FxSet::default(),
+            sitemap: FxSet::default(),
+            ok_urls_lower: FxMap::default(),
+            start_id: None,
+            redirect_targets: Default::default(),
+        }
     }
 
     pub fn page(&self, url: &str) -> Option<&'a Page> {
@@ -293,14 +356,14 @@ impl<'a> Ctx<'a> {
 
 /// Mark pages whose content is ~90%+ similar (simhash distance <= 6) but not identical.
 // ponytail: LSH buckets capped at 400 entries; huge template-identical buckets compare partially.
-fn near_duplicates(pages: &[Page]) -> HashSet<usize> {
+fn near_duplicates(pages: &[Page]) -> FxSet<usize> {
     let cands: Vec<(usize, u64, u64)> = pages
         .iter()
         .filter_map(|p| ihd(p).filter(|h| h.word_count >= 50).map(|h| (p.id, h.simhash, h.content_hash)))
         .collect();
-    let mut out = HashSet::new();
+    let mut out = FxSet::default();
     for band in 0..4 {
-        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut buckets: FxMap<u64, Vec<usize>> = FxMap::default();
         for (i, (_, sh, _)) in cands.iter().enumerate() {
             buckets.entry(sh >> (band * 16) & 0xffff).or_default().push(i);
         }
@@ -367,31 +430,46 @@ impl Audit {
 pub fn run(crawl: &Crawl) -> Audit {
     let ctx = Ctx::new(crawl);
     let checks: &[Check] = catalogue();
+    let pages = &crawl.pages;
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16);
-    let chunk = checks.len().div_ceil(threads);
-    let hits: Vec<Vec<usize>> = std::thread::scope(|s| {
-        let handles: Vec<_> = checks
-            .chunks(chunk)
-            .map(|part| {
-                let ctx = &ctx;
+    // Work items are (check, page chunk) pairs pulled from a shared counter, so the few
+    // expensive link checks spread over every thread instead of stalling one of them.
+    let chunk = pages.len().div_ceil(threads * 4).max(512);
+    let n_chunks = pages.len().div_ceil(chunk).max(1);
+    let total = checks.len() * n_chunks;
+    let next = AtomicUsize::new(0);
+    let mut parts: Vec<(usize, Vec<usize>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let (ctx, next) = (&ctx, &next);
                 s.spawn(move || {
-                    part.iter()
-                        .map(|c| {
-                            crawl
-                                .pages
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, p)| (c.test)(p, ctx))
-                                .map(|(i, _)| i)
-                                .collect::<Vec<_>>()
-                        })
-                        .collect::<Vec<_>>()
+                    let mut out = Vec::new();
+                    loop {
+                        let t = next.fetch_add(1, Ordering::Relaxed);
+                        if t >= total {
+                            break out;
+                        }
+                        let (c, k) = (&checks[t / n_chunks], t % n_chunks);
+                        let range = k * chunk..((k + 1) * chunk).min(pages.len());
+                        // a check that panics on odd data loses only its own chunk
+                        let hits: Vec<usize> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| range.filter(|&i| (c.test)(&pages[i], ctx)).collect()))
+                                .unwrap_or_default();
+                        if !hits.is_empty() {
+                            out.push((t, hits));
+                        }
+                    }
                 })
             })
             .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     });
-    let mut page_issues = vec![Vec::new(); crawl.pages.len()];
+    parts.sort_unstable_by_key(|(t, _)| *t);
+    let mut hits: Vec<Vec<usize>> = vec![Vec::new(); checks.len()];
+    for (t, h) in parts {
+        hits[t / n_chunks].extend(h);
+    }
+    let mut page_issues = vec![Vec::new(); pages.len()];
     for (ci, pages) in hits.iter().enumerate() {
         for &pi in pages {
             page_issues[pi].push(ci);

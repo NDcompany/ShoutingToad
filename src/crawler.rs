@@ -144,7 +144,7 @@ struct Shared {
     delay: Duration,
     ids: AtomicUsize,
     crawled: AtomicUsize,
-    robots: Mutex<HashMap<String, Option<Robots>>>,
+    robots: Mutex<HashMap<String, Option<Arc<Robots>>>>,
     /// Grows when the start URL redirects to its www / non-www twin.
     internal_hosts: std::sync::RwLock<Vec<String>>,
     root_domain: String,
@@ -215,27 +215,17 @@ pub fn start(seeds: Vec<String>, list_mode: bool, cfg: Config) -> Result<Handle,
 }
 
 fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
-    let mut start = seeds[0].clone();
-    let mut site = SiteInfo::default();
-    // Follow a start-URL redirect to its www/non-www twin, but only if robots.txt lets us fetch it.
-    let start_allowed = !sh.cfg.respect_robots
-        || robots_for(&sh, &start).is_none_or(|r| r.is_allowed(&path_and_query(&start), &sh.cfg.robots_agent()));
-    if !sh.list_mode && start_allowed {
-        if let Some(fin) = resolve_start(&sh, &start) {
-            start = fin;
-        }
-    }
-
     // robots.txt + sitemaps for the primary host, before any page is fetched
-    let robots = fetch_robots(&sh, &start, true, &mut site);
-    let mut sitemap_urls: Vec<String> = Vec::new();
-    if !sh.list_mode {
-        sitemap_urls = fetch_sitemaps(&sh, &start, robots.as_ref(), &mut site);
-        site.sitemaps_checked = true;
-        check_host_variants(&sh, &start, &mut site);
-    }
-    site.sitemap_urls = sitemap_urls.clone();
-    let _ = sh.tx.send(Event::Site(Box::new(site.clone())));
+    let setup = {
+        let (sh, start) = (sh.clone(), seeds[0].clone());
+        thread::spawn(move || site_setup(&sh, &start))
+    };
+    let setup = if wait_or_stop(&sh, std::slice::from_ref(&setup)) { setup.join().ok() } else { None };
+    let Some((site, sitemap_urls)) = setup else {
+        let _ = sh.tx.send(Event::Finished);
+        return;
+    };
+    let _ = sh.tx.send(Event::Site(Box::new(site)));
 
     {
         let mut q = sh.queue.lock().unwrap();
@@ -264,9 +254,6 @@ fn run(sh: Arc<Shared>, seeds: Vec<Url>) {
     let _ = sh.tx.send(Event::Finished);
 }
 
-/// Follow the start URL's redirects. When it lands on the same site (http -> https,
-/// bare -> www or the reverse), that host is internal too and site-wide checks
-/// (robots.txt, sitemaps, host variants) run against it.
 fn path_and_query(url: &Url) -> String {
     match url.query() {
         Some(q) => format!("{}?{q}", url.path()),
@@ -274,6 +261,9 @@ fn path_and_query(url: &Url) -> String {
     }
 }
 
+/// Follow the start URL's redirects. When it lands on the same site (http -> https,
+/// bare -> www or the reverse), that host is internal too and site-wide checks
+/// (robots.txt, sitemaps, host variants) run against it.
 fn resolve_start(sh: &Shared, start: &Url) -> Option<Url> {
     let bare = |u: &Url| u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
     let mut cur = start.clone();
@@ -300,6 +290,43 @@ fn resolve_start(sh: &Shared, start: &Url) -> Option<Url> {
     Some(cur)
 }
 
+fn site_setup(sh: &Shared, start: &Url) -> (SiteInfo, Vec<String>) {
+    let mut site = SiteInfo::default();
+    // Follow a start-URL redirect to its www/non-www twin, but only if robots.txt lets us fetch it.
+    let mut start = start.clone();
+    let start_allowed = !sh.cfg.respect_robots
+        || robots_for(sh, &start).is_none_or(|r| r.is_allowed(&path_and_query(&start), &sh.cfg.robots_agent()));
+    if !sh.list_mode && start_allowed {
+        if let Some(fin) = resolve_start(sh, &start) {
+            start = fin;
+        }
+    }
+    let start = &start;
+    let robots = fetch_robots(sh, start, true, &mut site);
+    let mut sitemap_urls: Vec<String> = Vec::new();
+    if !sh.list_mode {
+        sitemap_urls = fetch_sitemaps(sh, start, robots.as_deref(), &mut site);
+        site.sitemaps_checked = true;
+        if !sh.stop.load(Ordering::Relaxed) {
+            check_host_variants(sh, start, &mut site);
+        }
+    }
+    site.sitemap_urls = sitemap_urls.clone();
+    (site, sitemap_urls)
+}
+
+/// Wait for `handles`, but return false as soon as the crawl is stopped: a thread can sit in a
+/// request to a slow server until the timeout. It exits after that request; its result is dropped.
+fn wait_or_stop<T>(sh: &Shared, handles: &[thread::JoinHandle<T>]) -> bool {
+    while !handles.iter().all(|h| h.is_finished()) {
+        if sh.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
 fn run_workers(sh: &Arc<Shared>) {
     let handles: Vec<_> = (0..sh.cfg.threads.clamp(1, 64))
         .map(|_| {
@@ -307,9 +334,7 @@ fn run_workers(sh: &Arc<Shared>) {
             thread::spawn(move || worker(sh))
         })
         .collect();
-    for h in handles {
-        let _ = h.join();
-    }
+    wait_or_stop(sh, &handles);
 }
 
 fn worker(sh: Arc<Shared>) {
@@ -338,7 +363,14 @@ fn worker(sh: Arc<Shared>) {
             return;
         };
 
-        let (page, discovered) = process(&sh, &job);
+        // A panic on hostile input must not kill the worker: it would leave `active` raised and
+        // the crawl waiting forever.
+        let (page, discovered) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process(&sh, &job))).unwrap_or_else(|_| {
+            let mut page = base_page(&sh, &job.url, job.depth, job.source, is_internal(&sh, &job.url));
+            page.error = Some("Internal error while processing this URL".into());
+            page.status_text = "Internal error while processing this URL".into();
+            (page, Vec::new())
+        });
         let crawled = sh.crawled.fetch_add(1, Ordering::Relaxed) + 1;
         let (queued, active) = {
             let mut q = sh.queue.lock().unwrap();
@@ -450,7 +482,23 @@ fn fetch_once(sh: &Shared, url: &str, head: bool, limit: usize, accept: &str) ->
         .to_ascii_lowercase();
     let mut raw = Vec::new();
     if !head {
-        let _ = resp.take(limit as u64).read_to_end(&mut raw);
+        // reqwest's blocking timeout is per read, so a server dripping a byte every few seconds
+        // would hold this worker forever: enforce the timeout over the whole body, and stop.
+        let deadline = t0 + Duration::from_secs(sh.cfg.timeout_secs.max(1));
+        let mut body = resp.take(limit as u64);
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            if sh.stop.load(Ordering::Relaxed) {
+                return Err("Stopped".into());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("Timeout: the body took longer than {}s to download", sh.cfg.timeout_secs.max(1)));
+            }
+            match body.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+            }
+        }
     }
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     let transfer = raw.len();
@@ -526,8 +574,8 @@ fn describe_error(e: reqwest::Error) -> String {
     msg
 }
 
-fn robots_for(sh: &Shared, url: &Url) -> Option<Robots> {
-    let key = url.origin().ascii_serialization();
+fn robots_for(sh: &Shared, url: &Url) -> Option<Arc<Robots>> {
+    let key = url.origin().ascii_serialization(); // keeps a non-default port
     if let Some(r) = sh.robots.lock().unwrap().get(&key) {
         return r.clone();
     }
@@ -536,8 +584,8 @@ fn robots_for(sh: &Shared, url: &Url) -> Option<Robots> {
 }
 
 /// Fetch robots.txt for the URL's host, emit it as a page, and cache the rules.
-fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> Option<Robots> {
-    let key = url.origin().ascii_serialization();
+fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> Option<Arc<Robots>> {
+    let key = url.origin().ascii_serialization(); // keeps a non-default port
     let robots_url = format!("{key}/robots.txt");
     let mut current = robots_url.clone();
     let mut redirected = false;
@@ -567,7 +615,7 @@ fn fetch_robots(sh: &Shared, url: &Url, primary: bool, site: &mut SiteInfo) -> O
             }
         }
     }
-    let rules = result.as_ref().filter(|r| r.status == 200).map(|r| Robots::parse(&String::from_utf8_lossy(&r.body)));
+    let rules = result.as_ref().filter(|r| r.status == 200).map(|r| Arc::new(Robots::parse(&String::from_utf8_lossy(&r.body))));
     if primary {
         let agent = sh.cfg.robots_agent();
         site.robots = Some(RobotsInfo {
@@ -955,5 +1003,58 @@ mod tests {
             assert!(valid_lastmod(ok), "{ok}");
         }
         assert!(!valid_lastmod("23/11/2026"));
+    }
+
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// Answers /robots.txt with a 404 and never answers anything else.
+    fn hanging_server() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                thread::spawn(move || {
+                    let mut line = String::new();
+                    let _ = BufReader::new(&s).read_line(&mut line);
+                    if line.contains("/robots.txt") {
+                        let _ = s.write_all(b"HTTP/1.1 404 Not Found
+Content-Length: 0
+Connection: close
+
+");
+                    } else {
+                        thread::sleep(Duration::from_secs(60));
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    fn time_to_finish_after_stop(list_mode: bool) -> Duration {
+        let port = hanging_server();
+        let seeds: Vec<String> = (0..8).map(|i| format!("http://127.0.0.1:{port}/p/{i}")).collect();
+        let cfg = Config { threads: 4, timeout_secs: 30, ..Default::default() };
+        let h = start(seeds, list_mode, cfg).unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let t = Instant::now();
+        h.stop.store(true, Ordering::Relaxed);
+        loop {
+            match h.rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(Event::Finished) => return t.elapsed(),
+                Ok(_) => {}
+                Err(e) => panic!("crawl did not finish after stop: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stop_is_prompt_while_requests_hang() {
+        // crawl mode hangs in the sitemap fetch, list mode in the page workers
+        for list_mode in [false, true] {
+            let took = time_to_finish_after_stop(list_mode);
+            assert!(took < Duration::from_secs(2), "list_mode={list_mode}: stop took {took:?}");
+        }
     }
 }

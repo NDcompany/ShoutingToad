@@ -5,7 +5,8 @@ use crate::audit::{ih, indexability_label, pixel_width, Audit, Kind, Priority};
 use crate::checks::{catalogue, CATEGORIES};
 use crate::model::Crawl;
 use std::collections::HashSet;
-use std::fmt::Write;
+use std::fmt::{Display, Write};
+use std::io;
 
 pub const REPO: &str = "https://github.com/NDcompany/ShoutingToad";
 
@@ -27,51 +28,98 @@ macro_rules! cells {
     ($($x:expr),* $(,)?) => { [$($x.to_string()),*] };
 }
 
+/// Streaming CSV writer for the big per-URL and per-link exports: same escaping as [`row`],
+/// without a `Vec<String>` per row or the whole file in memory.
+struct Csv<W: io::Write> {
+    w: W,
+    buf: String,
+}
+
+impl<W: io::Write> Csv<W> {
+    fn new(w: W, header: &[&str]) -> io::Result<Self> {
+        let mut c = Csv { w, buf: String::new() };
+        c.w.write_all(row(&header.iter().map(|h| h.to_string()).collect::<Vec<_>>()).as_bytes())?;
+        Ok(c)
+    }
+
+    fn row(&mut self, cells: &[&dyn Display]) -> io::Result<()> {
+        for (i, c) in cells.iter().enumerate() {
+            if i > 0 {
+                self.w.write_all(b",")?;
+            }
+            self.buf.clear();
+            let _ = write!(self.buf, "{c}");
+            if self.buf.contains([',', '"', '\n', '\r']) {
+                self.w.write_all(csv(&self.buf).as_bytes())?;
+            } else {
+                self.w.write_all(self.buf.as_bytes())?;
+            }
+        }
+        self.w.write_all(b"\n")
+    }
+
+    fn finish(mut self) -> io::Result<W> {
+        self.w.flush()?;
+        Ok(self.w)
+    }
+}
+
+/// Run a streaming export into memory (for the GUI's save dialogs).
+fn to_string(f: impl FnOnce(&mut Vec<u8>) -> io::Result<()>) -> String {
+    let mut out = Vec::new();
+    let _ = f(&mut out);
+    String::from_utf8(out).unwrap_or_default()
+}
+
 pub fn internal_csv(crawl: &Crawl, audit: &Audit) -> String {
-    let mut out = row(&cells![
+    to_string(|w| internal_csv_to(w, crawl, audit).map(drop))
+}
+
+pub fn internal_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
+    let mut out = Csv::new(w, &[
         "Address", "Type", "Status Code", "Status", "Indexability", "Title 1", "Title 1 Length", "Title 1 Pixel Width",
         "Meta Description 1", "Meta Description 1 Length", "H1-1", "H1 Count", "H2-1", "Canonical", "Meta Robots",
         "X-Robots-Tag", "Word Count", "Flesch Reading Ease", "Size (Bytes)", "Transferred (Bytes)", "Response Time (ms)",
         "Crawl Depth", "Inlinks", "Outlinks", "Images", "HTTP Version", "Content Encoding", "Redirect URL", "Issues",
-        "Custom Search Hits", "Custom Extraction"
-    ]);
+        "Custom Search Hits", "Custom Extraction",
+    ])?;
     for (i, p) in crawl.pages.iter().enumerate() {
         let h = p.html.as_deref();
-        out.push_str(&row(&cells![
-            p.url,
-            p.kind(),
-            p.status,
-            p.status_text,
-            indexability_label(p),
-            p.title(),
-            p.title().chars().count(),
-            pixel_width(p.title(), 20.0),
-            p.description(),
-            p.description().chars().count(),
-            p.h1(),
-            h.map(|h| h.h1.len()).unwrap_or(0),
-            h.and_then(|h| h.h2.first()).map(|s| s.as_str()).unwrap_or(""),
-            p.canonical(),
-            h.map(|h| h.meta_robots.join("; ")).unwrap_or_default(),
-            p.headers_all("x-robots-tag").collect::<Vec<_>>().join("; "),
-            p.word_count(),
-            h.map(|h| format!("{:.1}", h.flesch)).unwrap_or_default(),
-            p.size,
-            p.transfer_size,
-            p.response_ms,
-            p.depth,
-            audit.inlinks.get(i).map(|v| v.len()).unwrap_or(0),
-            h.map(|h| h.links.len()).unwrap_or(0),
-            h.map(|h| h.images.len()).unwrap_or(0),
-            p.http_version,
-            p.content_encoding,
-            p.redirect_to.as_deref().unwrap_or(""),
-            audit.page_issues.get(i).map(|v| v.len()).unwrap_or(0),
-            p.custom_search_hits,
-            p.custom_extract.join(" | "),
-        ]));
+        out.row(&[
+            &p.url,
+            &p.kind(),
+            &p.status,
+            &p.status_text,
+            &indexability_label(p),
+            &p.title(),
+            &p.title().chars().count(),
+            &pixel_width(p.title(), 20.0),
+            &p.description(),
+            &p.description().chars().count(),
+            &p.h1(),
+            &h.map(|h| h.h1.len()).unwrap_or(0),
+            &h.and_then(|h| h.h2.first()).map(|s| s.as_str()).unwrap_or(""),
+            &p.canonical(),
+            &h.map(|h| h.meta_robots.join("; ")).unwrap_or_default(),
+            &p.headers_all("x-robots-tag").collect::<Vec<_>>().join("; "),
+            &p.word_count(),
+            &h.map(|h| format!("{:.1}", h.flesch)).unwrap_or_default(),
+            &p.size,
+            &p.transfer_size,
+            &p.response_ms,
+            &p.depth,
+            &audit.inlinks.get(i).map(|v| v.len()).unwrap_or(0),
+            &h.map(|h| h.links.len()).unwrap_or(0),
+            &h.map(|h| h.images.len()).unwrap_or(0),
+            &p.http_version,
+            &p.content_encoding,
+            &p.redirect_to.as_deref().unwrap_or(""),
+            &audit.page_issues.get(i).map(|v| v.len()).unwrap_or(0),
+            &p.custom_search_hits,
+            &p.custom_extract.join(" | "),
+        ])?;
     }
-    out
+    out.finish()
 }
 
 pub fn issues_csv(crawl: &Crawl, audit: &Audit) -> String {
@@ -90,15 +138,19 @@ pub fn issues_csv(crawl: &Crawl, audit: &Audit) -> String {
 }
 
 pub fn issue_urls_csv(crawl: &Crawl, audit: &Audit) -> String {
+    to_string(|w| issue_urls_csv_to(w, crawl, audit).map(drop))
+}
+
+pub fn issue_urls_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
     let cat = catalogue();
-    let mut out = row(&cells!["Issue ID", "Category", "Issue", "Type", "Priority", "Address"]);
+    let mut out = Csv::new(w, &["Issue ID", "Category", "Issue", "Type", "Priority", "Address"])?;
     for (i, hits) in audit.triggered() {
         let c = &cat[i];
         for &pi in hits {
-            out.push_str(&row(&cells![c.id, c.category, c.name, c.kind.label(), c.priority.label(), crawl.pages[pi].url]));
+            out.row(&[&c.id, &c.category, &c.name, &c.kind.label(), &c.priority.label(), &crawl.pages[pi].url])?;
         }
     }
-    out
+    out.finish()
 }
 
 pub fn checks_csv() -> String {
@@ -110,15 +162,20 @@ pub fn checks_csv() -> String {
 }
 
 pub fn inlinks_csv(crawl: &Crawl, audit: &Audit) -> String {
-    let mut out = row(&cells!["Destination", "Destination Status", "Source", "Anchor Text", "Follow", "Rel"]);
+    to_string(|w| inlinks_csv_to(w, crawl, audit).map(drop))
+}
+
+pub fn inlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl, audit: &Audit) -> io::Result<W> {
+    let mut out = Csv::new(w, &["Destination", "Destination Status", "Source", "Anchor Text", "Follow", "Rel"])?;
     for (ti, ins) in audit.inlinks.iter().enumerate() {
-        let t = &crawl.pages[ti];
+        let Some(t) = crawl.pages.get(ti) else { break };
         for &(si, li) in ins {
-            let Some(l) = crawl.pages[si].html.as_ref().and_then(|h| h.links.get(li)) else { continue };
-            out.push_str(&row(&cells![t.url, t.status, crawl.pages[si].url, l.anchor, if l.nofollow { "Nofollow" } else { "Follow" }, rel(l)]));
+            let Some(src) = crawl.pages.get(si) else { continue };
+            let Some(l) = src.html.as_ref().and_then(|h| h.links.get(li)) else { continue };
+            out.row(&[&t.url, &t.status, &src.url, &l.anchor, &if l.nofollow { "Nofollow" } else { "Follow" }, &rel(l)])?;
         }
     }
-    out
+    out.finish()
 }
 
 fn rel(l: &crate::model::Link) -> String {
@@ -139,50 +196,65 @@ fn rel(l: &crate::model::Link) -> String {
 }
 
 pub fn outlinks_csv(crawl: &Crawl) -> String {
-    let index: std::collections::HashMap<&str, &crate::model::Page> = crawl.pages.iter().map(|p| (p.url.as_str(), p)).collect();
-    let mut out = row(&cells!["Source", "Destination", "Destination Status", "Anchor Text", "Type", "Follow", "Rel"]);
+    to_string(|w| outlinks_csv_to(w, crawl).map(drop))
+}
+
+pub fn outlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
+    let ctx = crate::audit::Ctx::urls_only(crawl);
+    let mut out = Csv::new(w, &["Source", "Destination", "Destination Status", "Anchor Text", "Type", "Follow", "Rel"])?;
     for p in &crawl.pages {
         let Some(h) = &p.html else { continue };
         for l in &h.links {
-            let dest = index.get(l.url.as_str());
+            let dest = ctx.page(&l.url);
             let status = dest.map(|d| d.status.to_string()).unwrap_or_default();
             let internal = dest.map(|d| d.is_internal).unwrap_or(false);
-            out.push_str(&row(&cells![p.url, l.url, status, l.anchor, if internal { "Internal" } else { "External" }, if l.nofollow { "Nofollow" } else { "Follow" }, rel(l)]));
+            out.row(&[
+                &p.url, &l.url, &status, &l.anchor, &if internal { "Internal" } else { "External" },
+                &if l.nofollow { "Nofollow" } else { "Follow" }, &rel(l),
+            ])?;
         }
     }
-    out
+    out.finish()
 }
 
 pub fn images_csv(crawl: &Crawl) -> String {
-    let index: std::collections::HashMap<&str, &crate::model::Page> = crawl.pages.iter().map(|p| (p.url.as_str(), p)).collect();
-    let mut out = row(&cells!["Page", "Image", "Alt Text", "Alt Attribute", "Width & Height Set", "Lazy", "Image Status", "Image Size (Bytes)", "Content Type"]);
+    to_string(|w| images_csv_to(w, crawl).map(drop))
+}
+
+pub fn images_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
+    let ctx = crate::audit::Ctx::urls_only(crawl);
+    let mut out = Csv::new(w, &["Page", "Image", "Alt Text", "Alt Attribute", "Width & Height Set", "Lazy", "Image Status", "Image Size (Bytes)", "Content Type"])?;
     for p in &crawl.pages {
         let Some(h) = &p.html else { continue };
         for img in &h.images {
-            let t = index.get(img.url.as_str());
-            out.push_str(&row(&cells![
-                p.url, img.url, img.alt.as_deref().unwrap_or(""), if img.alt.is_some() { "Present" } else { "Missing" },
-                img.has_width && img.has_height, img.lazy,
-                t.map(|t| t.status.to_string()).unwrap_or_default(),
-                t.map(|t| t.size.to_string()).unwrap_or_default(),
-                t.map(|t| t.content_type.clone()).unwrap_or_default()
-            ]));
+            let t = ctx.page(&img.url);
+            out.row(&[
+                &p.url, &img.url, &img.alt.as_deref().unwrap_or(""), &if img.alt.is_some() { "Present" } else { "Missing" },
+                &(img.has_width && img.has_height), &img.lazy,
+                &t.map(|t| t.status.to_string()).unwrap_or_default(),
+                &t.map(|t| t.size.to_string()).unwrap_or_default(),
+                &t.map(|t| t.content_type.as_str()).unwrap_or_default(),
+            ])?;
         }
     }
-    out
+    out.finish()
 }
 
 pub fn redirects_csv(crawl: &Crawl) -> String {
-    let ctx = crate::audit::Ctx::new(crawl);
-    let mut out = row(&cells!["Address", "Status", "Redirect To", "Hops", "Final Address", "Final Status", "Loop"]);
+    to_string(|w| redirects_csv_to(w, crawl).map(drop))
+}
+
+pub fn redirects_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
+    let ctx = crate::audit::Ctx::urls_only(crawl);
+    let mut out = Csv::new(w, &["Address", "Status", "Redirect To", "Hops", "Final Address", "Final Status", "Loop"])?;
     for p in crawl.pages.iter().filter(|p| p.is_redirect()) {
         let (fin, hops, looped) = ctx.follow(&p.url);
-        out.push_str(&row(&cells![
-            p.url, p.status, p.redirect_to.as_deref().unwrap_or(""), hops,
-            fin.map(|f| f.url.as_str()).unwrap_or(""), fin.map(|f| f.status.to_string()).unwrap_or_default(), looped
-        ]));
+        out.row(&[
+            &p.url, &p.status, &p.redirect_to.as_deref().unwrap_or(""), &hops,
+            &fin.map(|f| f.url.as_str()).unwrap_or(""), &fin.map(|f| f.status.to_string()).unwrap_or_default(), &looped,
+        ])?;
     }
-    out
+    out.finish()
 }
 
 pub fn suggestions_csv(s: &[Suggestion]) -> String {

@@ -118,7 +118,7 @@ Run `shouting-toad checks`, or open **Help → All checks** in the app, to see e
 
 ## Building from source
 
-You need the stable [Rust toolchain](https://rustup.rs) (1.82 or newer).
+You need the stable [Rust toolchain](https://rustup.rs) (1.87 or newer).
 
 ```bash
 git clone https://github.com/NDcompany/ShoutingToad.git
