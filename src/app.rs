@@ -867,6 +867,20 @@ impl App {
             self.insp = Insp::Serp;
             self.rows_dirty = true;
         }
+        // SHOUTINGTOAD_SCREENSHOT_VIEW=rendered inspects the first page with a raw-vs-rendered difference.
+        if self.frames == 1
+            && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("rendered")
+            && self.has_data()
+        {
+            self.view = View::Urls;
+            self.selected = self
+                .crawl
+                .pages
+                .iter()
+                .position(|p| p.rendered.as_deref().is_some_and(|r| !r.new_links.is_empty()));
+            self.insp = Insp::Rendered;
+            self.rows_dirty = true;
+        }
         if self.frames == 1 && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("ai")
         {
             self.show_ai_search = true;

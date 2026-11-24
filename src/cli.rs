@@ -286,18 +286,22 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
         });
         crate::cwv::apply(&mut crawl, &r);
         let with = r.urls.iter().filter(|(_, c)| c.has_data()).count();
-        eprintln!(
-            "CrUX: origin {}, {with} of {} URLs with field data ({} queries)",
-            if r.origin.as_ref().is_some_and(|o| o.has_data()) {
-                "has data"
-            } else {
-                "has no data"
-            },
-            r.urls.len(),
-            r.queries
-        );
-        if let Some(e) = &r.error {
-            eprintln!("warning: {e}");
+        if let Some(e) = r.error.as_ref().filter(|_| r.origin.is_none() && with == 0) {
+            eprintln!("warning: Core Web Vitals skipped: {e}");
+        } else {
+            eprintln!(
+                "CrUX: origin {}, {with} of {} URLs with field data ({} queries)",
+                if r.origin.as_ref().is_some_and(|o| o.has_data()) {
+                    "has data"
+                } else {
+                    "has no data"
+                },
+                r.urls.len(),
+                r.queries
+            );
+            if let Some(e) = &r.error {
+                eprintln!("warning: {e}");
+            }
         }
     }
 
