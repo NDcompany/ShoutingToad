@@ -873,11 +873,11 @@ impl App {
             && self.has_data()
         {
             self.view = View::Urls;
-            self.selected = self
-                .crawl
-                .pages
-                .iter()
-                .position(|p| p.rendered.as_deref().is_some_and(|r| !r.new_links.is_empty()));
+            self.selected = self.crawl.pages.iter().position(|p| {
+                p.rendered
+                    .as_deref()
+                    .is_some_and(|r| !r.new_links.is_empty())
+            });
             self.insp = Insp::Rendered;
             self.rows_dirty = true;
         }

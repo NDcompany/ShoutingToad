@@ -542,6 +542,8 @@ impl Pool {
             "--disable-sync",
             "--disable-features=Translate,OptimizationHints,MediaRouter,InterestFeedContentSuggestions",
             "--metrics-recording-only",
+            "--disable-breakpad",
+            "--disable-crash-reporter",
             "--mute-audio",
             "--hide-scrollbars",
             "--password-store=basic",
@@ -555,6 +557,10 @@ impl Pool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+        // Own process group, so shutdown can kill the helpers (GPU, renderers) too: macOS has
+        // no job object or PDEATHSIG, and helpers left alive keep the profile folder in use.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         #[cfg(target_os = "linux")]
         {
             // Chrome refuses to start as root without this (CI containers).
@@ -781,6 +787,16 @@ impl Pool {
             j.kill();
         }
         if let Some(mut c) = self.child.lock().unwrap().take() {
+            #[cfg(unix)]
+            {
+                extern "C" {
+                    fn kill(pid: i32, sig: i32) -> i32;
+                }
+                // SAFETY: plain syscall; a negative pid signals the browser's process group.
+                unsafe {
+                    kill(-(c.id() as i32), 9);
+                }
+            }
             let _ = c.kill();
             let _ = c.wait();
             LIVE_BROWSERS.fetch_sub(1, Ordering::SeqCst);
