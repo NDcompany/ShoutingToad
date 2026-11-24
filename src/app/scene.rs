@@ -8,7 +8,7 @@
 //!
 //!   view:overview|urls          quick:<filter label>        search:<text>
 //!   issue:<check id>            select:<url substring>      insp:<inspector tab>
-//!   open:<dialog>               compare:<file>              migrate:<file>
+//!   open:<dialog|unsaved>       compare:<file>              migrate:<file>
 //!   url:<text>  start           list:<url>|<url>            pack:<rule pack path>
 //!   click:x,y   rclick:x,y      move:x,y                    scroll:dy
 //!   type:<text> key:<Enter|Tab|Escape|ArrowDown|...>        theme:dark|light
@@ -139,6 +139,8 @@ impl App {
                 "ai_search" => self.show_ai_search = true,
                 "rules" => self.rule_packs.open = true,
                 "cwv" => self.cwv.show = true,
+                // the prompt shown before an unsaved crawl would be discarded
+                "unsaved" => self.pending = Some(Pending::New),
                 _ => {}
             },
             "compare" => self.compare_load(arg.into()),
