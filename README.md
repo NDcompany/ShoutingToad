@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/NDcompany/ShoutingToad/releases/latest"><b>Download</b></a> ·
   <a href="https://github.com/NDcompany/ShoutingToad/wiki"><b>User guide</b></a> ·
+  <a href="https://ndcompany.in/open-source/shoutingtoad"><b>Project page</b></a> ·
   <a href="#features">Features</a> ·
   <a href="#command-line-and-ci">Command line &amp; CI</a> ·
   <a href="#what-it-checks">What it checks</a> ·
@@ -203,4 +204,4 @@ Bug reports and pull requests are welcome. Please open an [issue](https://github
 
 ShoutingToad is free software: you can redistribute it and modify it under the terms of the [GNU Affero General Public License v3.0](LICENSE) or (at your option) any later version.
 
-Made by [N&D Co.](https://ndcompany.in)
+Made by [N&D Co.](https://ndcompany.in). Project page: [ndcompany.in/open-source/shoutingtoad](https://ndcompany.in/open-source/shoutingtoad)
