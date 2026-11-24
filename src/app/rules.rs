@@ -12,8 +12,8 @@ const DOCS: &str = "https://github.com/NDcompany/ShoutingToad/blob/main/docs/rul
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PackEntry {
-    path: String,
-    enabled: bool,
+    pub(super) path: String,
+    pub(super) enabled: bool,
 }
 
 #[derive(Default)]

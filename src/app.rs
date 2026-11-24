@@ -21,6 +21,7 @@ mod cwv_ui;
 mod migrate;
 mod render_ui;
 mod rules;
+mod scene;
 
 const ROBOTS_HELP: &str = "Ticked: URLs that robots.txt disallows are not fetched and are listed as blocked.
 Unticked: robots.txt is ignored and everything the crawler finds is fetched. Only do this on sites you own or have permission to audit.";
@@ -207,6 +208,7 @@ pub struct App {
     migrate_ui: migrate::MigrateUi,
     rule_packs: rules::RulesUi,
     cwv: cwv_ui::CwvState,
+    scene: scene::Scene,
 }
 
 /// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
@@ -243,8 +245,10 @@ impl App {
     }
 
     fn blank(cc: &eframe::CreationContext, screenshot: Option<String>) -> Self {
+        // Screenshots for the docs start from default settings, not this computer's.
         let mut settings: Settings = cc
             .storage
+            .filter(|_| screenshot.is_none())
             .and_then(|s| eframe::get_value(s, "settings"))
             .unwrap_or_default();
         settings.ai.load_env_key();
@@ -324,6 +328,7 @@ impl App {
             migrate_ui: Default::default(),
             rule_packs: Default::default(),
             cwv: Default::default(),
+            scene: Default::default(),
         }
     }
 
@@ -794,7 +799,13 @@ fn kv(ui: &mut egui::Ui, k: &str, v: impl Into<String>) {
 
 impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "settings", &self.settings);
+        if self.screenshot.is_none() {
+            eframe::set_value(storage, "settings", &self.settings);
+        }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        raw.events.append(&mut self.scene.events);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -857,6 +868,7 @@ impl App {
         };
         ctx.request_repaint();
         self.frames += 1;
+        let scripted = self.scene_tick(ctx);
         // Docs helper: SHOUTINGTOAD_SCREENSHOT_VIEW=urls shows the URL table with the first page inspected.
         if self.frames == 1
             && std::env::var("SHOUTINGTOAD_SCREENSHOT_VIEW").as_deref() == Ok("urls")
@@ -885,7 +897,7 @@ impl App {
         {
             self.show_ai_search = true;
         }
-        if self.frames == 60 {
+        if self.frames == 60 && !scripted {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         let shots: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
@@ -902,6 +914,14 @@ impl App {
                 .collect()
         });
         if let Some(img) = shots.first() {
+            let (target, exit) = if scripted {
+                match self.scene_shot_taken() {
+                    Some(t) => t,
+                    None => return,
+                }
+            } else {
+                (target, true)
+            };
             let _ = image::save_buffer(
                 &target,
                 img.as_raw(),
@@ -909,7 +929,9 @@ impl App {
                 img.height() as u32,
                 image::ExtendedColorType::Rgba8,
             );
-            std::process::exit(0);
+            if exit {
+                std::process::exit(0);
+            }
         }
     }
 

@@ -1979,9 +1979,11 @@ fn content(v: &mut Vec<Check>) {
         "Coming Soon or Under Construction",
         "The page says it is coming soon or under construction but is open to indexing.",
         "Noindex unfinished pages, or publish the content.",
+        // Placeholder pages are nearly empty; a long page that only mentions the phrase
+        // ("A Life Under Construction") is not one.
         |p, _| ihd(p).is_some_and(|h| {
             let s = format!("{} {}", first(&h.titles), first(&h.h1)).to_lowercase();
-            s.contains("coming soon") || s.contains("under construction")
+            h.word_count < 150 && (s.contains("coming soon") || s.contains("under construction"))
         })
     );
 }

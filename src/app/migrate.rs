@@ -7,7 +7,7 @@ use crate::migrate::{self, Mapping, Method};
 #[derive(Default)]
 pub(super) struct MigrateUi {
     pub(super) open: bool,
-    rx: Option<Receiver<Result<Crawl, String>>>,
+    pub(super) rx: Option<Receiver<Result<Crawl, String>>>,
     other: Option<Box<Crawl>>,
     path: String,
     /// The current crawl is the old site and the loaded one the new site.
@@ -26,6 +26,10 @@ impl App {
         else {
             return;
         };
+        self.migrate_load(path);
+    }
+
+    pub(super) fn migrate_load(&mut self, path: std::path::PathBuf) {
         let (tx, rx) = channel();
         let p = path.clone();
         std::thread::spawn(move || {

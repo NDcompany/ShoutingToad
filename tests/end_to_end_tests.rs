@@ -528,7 +528,10 @@ fn main_site(b: &str, e: &str, port: u16) -> Site {
         ),
         (
             "/c/coming-soon",
-            g("/c/coming-soon", "New range").h1("Coming soon: the new toad range"),
+            g("/c/coming-soon", "New range")
+                .h1("Coming soon: the new toad range")
+                .drop("<p class=\"prose\">")
+                .body("<p>Our new range launches next month. Sign up to hear about it first.</p>"),
         ),
     ] {
         page!(path, doc.route());

@@ -9,7 +9,7 @@ pub(super) struct CompareUi {
     pub(super) open: bool,
     /// Also used by the CI workflow dialog: generate the --baseline variant.
     pub(super) ci_baseline: bool,
-    rx: Option<Receiver<Result<(Crawl, Audit), String>>>,
+    pub(super) rx: Option<Receiver<Result<(Crawl, Audit), String>>>,
     before: Option<Box<(Crawl, Audit)>>,
     path: String,
     cmp: Option<Comparison>,
@@ -43,6 +43,10 @@ impl App {
         else {
             return;
         };
+        self.compare_load(path);
+    }
+
+    pub(super) fn compare_load(&mut self, path: std::path::PathBuf) {
         let (tx, rx) = channel();
         let p = path.clone();
         std::thread::spawn(move || {
