@@ -50,7 +50,8 @@ Download the latest build for your system from the **[Releases page](https://git
 
 | System | File | How to install |
 | --- | --- | --- |
-| Windows 10/11 (64-bit) | `shouting-toad-x86_64-pc-windows-msvc.zip` | Unzip, then right-click `install_windows.ps1` → *Run with PowerShell*. This adds Start-menu and desktop shortcuts and puts `shouting-toad` on your PATH. Or just run `shouting-toad.exe` directly. |
+| Windows 10/11 (64-bit) | [`ShoutingToad-Setup-x64.exe`](https://github.com/NDcompany/ShoutingToad/releases/latest/download/ShoutingToad-Setup-x64.exe) | Run the installer. No administrator rights needed; it adds Start-menu (and optional desktop) shortcuts, opens `.shoutingtoad` files, can put `shouting-toad` on your PATH, and uninstalls from *Settings → Apps*. If SmartScreen warns about an unrecognised app, choose *More info → Run anyway*. |
+| Windows, portable | `shouting-toad-x86_64-pc-windows-msvc.zip` | Unzip and run `shouting-toad.exe`; nothing is installed. |
 | macOS (Apple Silicon) | `ShoutingToad-aarch64-apple-darwin.app.zip` | Unzip and drag **ShoutingToad.app** into Applications. The first time, right-click it and choose **Open**. |
 | macOS (Intel) | `ShoutingToad-x86_64-apple-darwin.app.zip` | As above. |
 | Linux (x86-64) | `shouting-toad-x86_64-unknown-linux-gnu.tar.gz` | Extract, then run `./install_linux.sh`. Run it as root to install for all users. |

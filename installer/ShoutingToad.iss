@@ -35,7 +35,7 @@ SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\shouting-toad.exe
 UninstallDisplayName=ShoutingToad SEO Spider
 OutputDir=..\dist
-OutputBaseFilename=ShoutingToad-Setup-{#AppVersion}-x64
+OutputBaseFilename=ShoutingToad-Setup-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -55,7 +55,7 @@ Name: "{autoprograms}\ShoutingToad"; Filename: "{app}\shouting-toad.exe"; Commen
 Name: "{autodesktop}\ShoutingToad"; Filename: "{app}\shouting-toad.exe"; Comment: "ShoutingToad SEO Spider"; Tasks: desktopicon
 
 [Registry]
-Root: HKA; Subkey: "Software\Classes\.shoutingtoad"; ValueType: string; ValueName: ""; ValueData: "ShoutingToad.Crawl"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Classes\.shoutingtoad"; ValueType: string; ValueName: ""; ValueData: "ShoutingToad.Crawl"; Flags: uninsdeletevalue uninsdeletekeyifempty; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\ShoutingToad.Crawl"; ValueType: string; ValueName: ""; ValueData: "ShoutingToad crawl"; Flags: uninsdeletekey; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\ShoutingToad.Crawl\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\shouting-toad.exe,0"; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\ShoutingToad.Crawl\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\shouting-toad.exe"" ""%1"""; Tasks: assoc

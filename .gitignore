@@ -16,3 +16,4 @@ test_exports/
 *.shoutingtoad
 shoutingtoad-report/
 .claude/
+dist/

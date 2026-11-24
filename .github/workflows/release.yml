@@ -80,7 +80,19 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/shouting-toad.exe $name/
           Copy-Item README.md, LICENSE, installer/install_windows.ps1, installer/uninstall_windows.ps1 $name/
           Compress-Archive -Path "$name/*" -DestinationPath "$name.zip"
-          "ASSETS=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Setup.exe (Inno Setup): per-user install, shortcuts, uninstaller, optional PATH
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DAppVersion=$version" "/DBinary=$PWD\target\${{ matrix.target }}\release\shouting-toad.exe" installer\ShoutingToad.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Move-Item dist\ShoutingToad-Setup-x64.exe .
+          # The installer must install and uninstall cleanly
+          Start-Process .\ShoutingToad-Setup-x64.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER","/DIR=$PWD\st-test" -Wait
+          if (-not (Test-Path st-test\shouting-toad.exe)) { throw "installer did not install the app" }
+          Start-Process st-test\unins000.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait
+          Start-Sleep 3
+          if (Test-Path st-test\shouting-toad.exe) { throw "uninstaller left the app behind" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -88,6 +100,7 @@ jobs:
           path: |
             *.tar.gz
             *.zip
+            *.exe
 
   release:
     needs: build
