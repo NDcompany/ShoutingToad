@@ -449,7 +449,9 @@ pub fn crawl(seeds: &[String], list_mode: bool, cfg: Config) -> Crawl {
             Event::Page(p) => c.pages.push(*p),
             Event::Site(s) => c.site = *s,
             Event::Finished => break,
-            Event::Progress { .. } | Event::Log(_) => {}
+            // Shown by the test runner only when a test fails.
+            Event::Log(l) => eprintln!("[crawl log] {l}"),
+            Event::Progress { .. } => {}
         }
     }
     c.pages.sort_by_key(|p| p.id);

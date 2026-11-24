@@ -503,6 +503,8 @@ pub struct Pool {
     control: Mutex<Option<Ws>>,
     control_id: AtomicUsize,
     idle: Mutex<Vec<Tab>>,
+    /// Tabs in the pool (idle or rendering). 0 means the browser is gone: renders fail fast.
+    live_tabs: AtomicUsize,
     cv: Condvar,
     dir: PathBuf,
     closed: AtomicBool,
@@ -580,9 +582,30 @@ impl Pool {
                 });
             }
         }
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Could not start {}: {e}", exe.display()))?;
+        // PDEATHSIG fires when the *thread* that started the browser exits, not the process,
+        // so on Linux it is started from a thread that lives as long as the browser.
+        #[cfg(target_os = "linux")]
+        let spawned = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let r = cmd.spawn();
+                let proc_dir = r
+                    .as_ref()
+                    .ok()
+                    .map(|c| Path::new("/proc").join(c.id().to_string()));
+                let _ = tx.send(r);
+                // ponytail: polls /proc; the entry goes once shutdown() reaps the browser.
+                while proc_dir.as_ref().is_some_and(|d| d.exists()) {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            });
+            rx.recv()
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let spawned = cmd.spawn().map_err(|e| e.to_string());
+        let child = spawned.map_err(|e| format!("Could not start {}: {e}", exe.display()))?;
         LIVE_BROWSERS.fetch_add(1, Ordering::SeqCst);
         let mut pool = Pool {
             browser: exe.display().to_string(),
@@ -593,6 +616,7 @@ impl Pool {
             control: Mutex::new(None),
             control_id: AtomicUsize::new(10),
             idle: Mutex::new(Vec::new()),
+            live_tabs: AtomicUsize::new(0),
             cv: Condvar::new(),
             dir,
             closed: AtomicBool::new(false),
@@ -635,6 +659,7 @@ impl Pool {
         for _ in 0..tabs.clamp(1, 16) {
             let t = pool.new_tab(stop)?;
             pool.idle.lock().unwrap().push(t);
+            pool.live_tabs.fetch_add(1, Ordering::SeqCst);
         }
         Ok(pool)
     }
@@ -700,7 +725,10 @@ impl Pool {
     fn acquire(&self, stop: &AtomicBool) -> Option<Tab> {
         let mut idle = self.idle.lock().unwrap();
         loop {
-            if stop.load(Ordering::Relaxed) || self.closed.load(Ordering::SeqCst) {
+            if stop.load(Ordering::Relaxed)
+                || self.closed.load(Ordering::SeqCst)
+                || self.live_tabs.load(Ordering::SeqCst) == 0
+            {
                 return None;
             }
             if let Some(t) = idle.pop() {
@@ -721,7 +749,11 @@ impl Pool {
             // A hung or crashed tab is replaced (closing it also kills a busy renderer).
             let _ = self.browser_call("Target.closeTarget", json!({"targetId": t.target}), stop);
             drop(t);
-            self.new_tab(stop).ok()
+            let fresh = self.new_tab(stop).ok();
+            if fresh.is_none() {
+                self.live_tabs.fetch_sub(1, Ordering::SeqCst);
+            }
+            fresh
         };
         if let Some(t) = t {
             self.idle.lock().unwrap().push(t);
@@ -734,9 +766,14 @@ impl Pool {
     pub fn render(&self, url: &str, raw: &HtmlData, stop: &AtomicBool) -> (Rendered, Vec<Link>) {
         let t0 = Instant::now();
         let Some(mut tab) = self.acquire(stop) else {
+            let error = if stop.load(Ordering::Relaxed) || self.closed.load(Ordering::SeqCst) {
+                STOPPED.into()
+            } else {
+                "The browser closed unexpectedly, so this page was not rendered".into()
+            };
             return (
                 Rendered {
-                    error: Some(STOPPED.into()),
+                    error: Some(error),
                     ..Default::default()
                 },
                 Vec::new(),
