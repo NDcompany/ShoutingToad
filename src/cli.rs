@@ -98,7 +98,9 @@ pub fn run(args: Vec<String>) -> i32 {
             0
         }
         Some("checks") => {
-            print!("{}", report::checks_csv());
+            // `checks | head` closes the pipe early: not an error.
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(report::checks_csv().as_bytes());
             0
         }
         Some("rules") => rules_cmd(&rest[1..]),
@@ -436,8 +438,12 @@ pub(crate) fn crawl_cmd(args: &[String]) -> Result<i32, String> {
     // ponytail: the process exits right after this; freeing millions of small allocations one
     // by one takes ~10s at 50k URLs, so leave it to the OS.
     std::mem::forget((crawl, audit));
-    if failed_level || failed_check {
+    if failed_level {
         eprintln!("Failing: issues at or above the --fail-on threshold were found.");
+        return Ok(2);
+    }
+    if failed_check {
+        eprintln!("Failing: a check named with --fail-on-check was triggered.");
         return Ok(2);
     }
     if failed_new {

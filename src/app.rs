@@ -23,6 +23,14 @@ mod render_ui;
 mod rules;
 mod scene;
 
+/// An action that would discard an unsaved crawl, held until the user confirms.
+enum Pending {
+    New,
+    Open,
+    Start(Vec<String>, bool),
+    Exit,
+}
+
 const ROBOTS_HELP: &str = "Ticked: URLs that robots.txt disallows are not fetched and are listed as blocked.
 Unticked: robots.txt is ignored and everything the crawler finds is fetched. Only do this on sites you own or have permission to audit.";
 const ISSUE: Color32 = Color32::from_rgb(232, 72, 72);
@@ -209,6 +217,9 @@ pub struct App {
     rule_packs: rules::RulesUi,
     cwv: cwv_ui::CwvState,
     scene: scene::Scene,
+    /// The crawl changed since it was last saved or opened.
+    unsaved: bool,
+    pending: Option<Pending>,
 }
 
 /// Page counts for the overview, recomputed only when the crawl changes (a pass over 50k pages
@@ -223,6 +234,17 @@ struct OverviewStats {
     status: [usize; 5],
     depth: std::collections::BTreeMap<usize, usize>,
     kinds: std::collections::BTreeMap<&'static str, usize>,
+}
+
+/// A table cell that shortens long text (URLs, anchors) so other columns stay visible; the
+/// full text is on hover.
+fn cell(ui: &mut egui::Ui, text: &str, max: usize) -> egui::Response {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max {
+        return ui.label(text);
+    }
+    let short: String = text.chars().take(max - 1).collect();
+    ui.label(format!("{short}…")).on_hover_text(text)
 }
 
 /// Free a replaced crawl off the UI thread: dropping millions of small allocations takes seconds.
@@ -329,6 +351,68 @@ impl App {
             rule_packs: Default::default(),
             cwv: Default::default(),
             scene: Default::default(),
+            unsaved: false,
+            pending: None,
+        }
+    }
+
+    /// True when `p` can run now; otherwise asks first, because it would discard an unsaved crawl.
+    fn guard(&mut self, p: Pending) -> bool {
+        if self.unsaved && self.has_data() && self.screenshot.is_none() {
+            self.pending = Some(p);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        if self.pending.is_none() {
+            return;
+        }
+        let mut choice = None;
+        egui::Window::new("Unsaved crawl")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("This crawl has not been saved. Save it before you continue?");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Save…").strong()).clicked() {
+                        choice = Some(0);
+                    }
+                    if ui.button("Don't save").clicked() {
+                        choice = Some(1);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(2);
+                    }
+                });
+            });
+        match choice {
+            Some(0) => {
+                self.save_project();
+                if !self.unsaved {
+                    self.run_pending(ctx);
+                }
+            }
+            Some(1) => {
+                self.unsaved = false;
+                self.run_pending(ctx);
+            }
+            Some(_) => self.pending = None,
+            None => {}
+        }
+    }
+
+    fn run_pending(&mut self, ctx: &egui::Context) {
+        match self.pending.take() {
+            Some(Pending::New) => self.clear(),
+            Some(Pending::Open) => self.open_project(),
+            Some(Pending::Start(seeds, list)) => self.start(seeds, list),
+            Some(Pending::Exit) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
         }
     }
 
@@ -417,6 +501,7 @@ impl App {
         self.opportunities.clear();
         self.rows_dirty = true;
         self.view = View::Overview;
+        self.unsaved = false;
     }
 
     fn run_audit(&mut self) {
@@ -428,6 +513,7 @@ impl App {
 
     fn pump_events(&mut self) {
         let mut finished = false;
+        let mut log = None;
         if let Some(h) = &self.handle {
             for _ in 0..5000 {
                 match h.rx.try_recv() {
@@ -443,13 +529,31 @@ impl App {
                         self.crawled = crawled;
                         self.queued = queued;
                     }
-                    Ok(Event::Log(_)) => {}
+                    // Notes from the crawler (robots.txt or sitemap errors, rendering status).
+                    Ok(Event::Log(l)) => log = Some(l),
                     Ok(Event::Finished) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         finished = true;
                         break;
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 }
+            }
+        }
+        if let Some(l) = log {
+            let bad = [
+                "error",
+                "could not",
+                "failed",
+                "did not",
+                "exited",
+                "refused",
+            ]
+            .iter()
+            .any(|w| l.to_lowercase().contains(w));
+            if bad {
+                self.error(l);
+            } else {
+                self.toast(l);
             }
         }
         if let Some(t) = self.started {
@@ -465,8 +569,14 @@ impl App {
             }
             self.run_audit();
             let n = self.crawl.pages.len();
+            self.unsaved = true;
+            let verb = if self.state == State::Stopped {
+                "stopped"
+            } else {
+                "finished"
+            };
             self.toast(format!(
-                "Crawl finished: {n} URLs audited against {} checks",
+                "Crawl {verb}: {n} URLs audited against {} checks",
                 catalogue().len()
             ));
             self.after_crawl_cwv();
@@ -632,7 +742,10 @@ impl App {
             return;
         };
         match self.crawl.save(&path) {
-            Ok(_) => self.toast(format!("Saved crawl to {}", path.display())),
+            Ok(_) => {
+                self.unsaved = false;
+                self.toast(format!("Saved crawl to {}", path.display()));
+            }
             Err(e) => self.error(e),
         }
     }
@@ -664,14 +777,24 @@ impl App {
             ("outlinks.csv", report::outlinks_csv(&self.crawl)),
             ("images.csv", report::images_csv(&self.crawl)),
             ("redirects.csv", report::redirects_csv(&self.crawl)),
+            ("ai_bots.csv", report::ai_bots_csv(&self.crawl)),
+            (
+                "accessibility.html",
+                crate::wcag::html(&self.crawl, &self.audit),
+            ),
+            (
+                "accessibility.csv",
+                crate::wcag::csv(&self.crawl, &self.audit),
+            ),
         ];
+        let n = files.len();
         for (name, data) in files {
             if let Err(e) = std::fs::write(dir.join(name), data) {
                 self.error(format!("Could not write {name}: {e}"));
                 return;
             }
         }
-        self.toast(format!("Exported 8 files to {}", dir.display()));
+        self.toast(format!("Exported {n} files to {}", dir.display()));
     }
 
     fn start_ai(&mut self) {
@@ -809,6 +932,15 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.guard(Pending::Exit) {
+            // nothing to lose: let the window close
+        } else if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| matches!(p, Pending::Exit))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.pump_events();
         self.pump_ai();
         self.pump_cwv(ctx);
@@ -940,12 +1072,16 @@ impl App {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New crawl").clicked() {
-                        self.clear();
                         ui.close_menu();
+                        if self.guard(Pending::New) {
+                            self.clear();
+                        }
                     }
                     if ui.button("Open crawl…").clicked() {
                         ui.close_menu();
-                        self.open_project();
+                        if self.guard(Pending::Open) {
+                            self.open_project();
+                        }
                     }
                     if ui
                         .add_enabled(self.has_data(), egui::Button::new("Save crawl…"))
@@ -1121,7 +1257,7 @@ impl App {
                         .clicked()
                     {
                         ui.close_menu();
-                        self.migrate_pick();
+                        self.migrate_open();
                     }
                 });
                 ui.menu_button("Help", |ui| {
@@ -1174,7 +1310,9 @@ impl App {
                     && !busy
                 {
                     let u = self.url_input.clone();
-                    self.start(vec![u], false);
+                    if self.guard(Pending::Start(vec![u.clone()], false)) {
+                        self.start(vec![u], false);
+                    }
                 }
                 let pause_label = if self.state == State::Paused {
                     "Resume"
@@ -1193,6 +1331,7 @@ impl App {
                 if ui
                     .add_enabled(self.has_data() && !busy, egui::Button::new("Clear"))
                     .clicked()
+                    && self.guard(Pending::New)
                 {
                     self.clear();
                 }
@@ -1397,10 +1536,11 @@ impl App {
                                         });
                                         let r =
                                             ui.selectable_label(sel, label).on_hover_text(format!(
-                                                "{} · {} priority\n\n{}",
+                                                "{} · {} priority\n\n{}\n\nHow to fix: {}",
                                                 c.kind.label(),
                                                 c.priority.label(),
-                                                c.description
+                                                c.description,
+                                                c.fix
                                             ));
                                         if r.clicked() {
                                             clicked = Some(i);
@@ -1808,6 +1948,7 @@ impl App {
             let Some(i) = self.selected.filter(|&i| i < self.crawl.pages.len()) else {
                 ui.add_space(8.0);
                 ui.label(RichText::new("Select a URL above to inspect it.").weak());
+                ui.allocate_space(ui.available_size());
                 return;
             };
             let p = &self.crawl.pages[i];
@@ -1826,12 +1967,7 @@ impl App {
                 (Insp::Vitals, "CWV".to_string()),
             ];
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                for (t, name) in tabs {
-                    if ui.selectable_label(self.insp == t, name).clicked() {
-                        self.insp = t;
-                    }
-                }
+            let url_buttons = |ui: &mut egui::Ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Open in browser").clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(&p.url));
@@ -1840,11 +1976,28 @@ impl App {
                         ui.ctx().copy_text(p.url.clone());
                     }
                 });
-            });
+            };
+            let fitted = ui
+                .horizontal_wrapped(|ui| {
+                    for (t, name) in tabs {
+                        if ui.selectable_label(self.insp == t, name).clicked() {
+                            self.insp = t;
+                        }
+                    }
+                    let room = ui.available_width() > 200.0;
+                    if room {
+                        url_buttons(ui);
+                    }
+                    room
+                })
+                .inner;
+            if !fitted {
+                ui.horizontal(url_buttons);
+            }
             ui.separator();
             let cat = catalogue();
             let mut jump: Option<usize> = None;
-            egui::ScrollArea::both().id_salt("insp").auto_shrink([false, false]).show(ui, |ui| match self.insp {
+            egui::ScrollArea::both().id_salt(("insp", self.insp as usize)).auto_shrink([false, false]).show(ui, |ui| match self.insp {
                 Insp::Details => {
                     egui::Grid::new("details").num_columns(2).striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
                         kv(ui, "Address", &p.url);
@@ -1863,7 +2016,7 @@ impl App {
                             kv(ui, "Meta robots", h.meta_robots.join(", "));
                             kv(ui, "Language", h.lang.clone().unwrap_or_default());
                             kv(ui, "Word count", format!("{} words · Flesch {:.0}", h.word_count, h.flesch));
-                            kv(ui, "Hreflang", h.hreflang.iter().map(|(l, u)| format!("{l} → {u}")).collect::<Vec<_>>().join("\n"));
+                            kv(ui, "Hreflang", h.hreflang.iter().map(|(l, u)| format!("{l}: {u}")).collect::<Vec<_>>().join("\n"));
                         }
                         kv(ui, "Crawl depth", p.depth.to_string());
                         kv(ui, "Found via", p.source.map(|s| format!("{s:?}")).unwrap_or_default());
@@ -1904,8 +2057,8 @@ impl App {
                         for &(s, l) in self.audit.inlinks.get(i).map(|v| v.as_slice()).unwrap_or(&[]).iter().take(2000) {
                             let src = &self.crawl.pages[s];
                             if let Some(link) = src.html.as_ref().and_then(|h| h.links.get(l)) {
-                                ui.label(&src.url);
-                                ui.label(&link.anchor);
+                                cell(ui, &src.url, 90);
+                                cell(ui, &link.anchor, 60);
                                 ui.label(if link.nofollow { "nofollow" } else { "follow" });
                                 ui.end_row();
                             }
@@ -1920,13 +2073,13 @@ impl App {
                             }
                             ui.end_row();
                             for l in h.links.iter().take(3000) {
-                                ui.label(&l.url);
+                                cell(ui, &l.url, 90);
                                 let st = self.url_index.get(&l.url).map(|&x| self.crawl.pages[x].status);
                                 match st {
                                     Some(s) => ui.label(RichText::new(s.to_string()).color(status_color(s))),
                                     None => ui.label("—"),
                                 };
-                                ui.label(&l.anchor);
+                                cell(ui, &l.anchor, 60);
                                 ui.label(if l.nofollow { "nofollow" } else { "" });
                                 ui.end_row();
                             }
@@ -1941,11 +2094,11 @@ impl App {
                             }
                             ui.end_row();
                             for img in &h.images {
-                                ui.label(&img.url);
+                                cell(ui, &img.url, 90);
                                 match &img.alt {
                                     None => ui.label(RichText::new("(missing alt attribute)").color(ISSUE)),
                                     Some(a) if a.is_empty() => ui.label(RichText::new("(empty)").weak()),
-                                    Some(a) => ui.label(a),
+                                    Some(a) => cell(ui, a, 60),
                                 };
                                 let t = self.url_index.get(&img.url).map(|&x| &self.crawl.pages[x]);
                                 ui.label(t.map(|t| fmt_bytes(t.size)).unwrap_or_default());
@@ -2068,6 +2221,7 @@ fn bar(ui: &mut egui::Ui, label: &str, n: usize, frac: f32, color: Color32) {
 // ---------------------------------------------------------------- dialogs
 impl App {
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.confirm_dialog(ctx);
         self.config_dialog(ctx);
         self.list_dialog(ctx);
         self.ai_settings_dialog(ctx);
@@ -2131,7 +2285,7 @@ impl App {
                     }
                 }
             });
-            ui.add(egui::TextEdit::singleline(&mut c.user_agent).desired_width(520.0));
+            ui.add(egui::TextEdit::singleline(&mut c.user_agent).desired_width(520.0).clip_text(true));
             ui.separator();
             ui.label(RichText::new("Include / exclude (regular expressions on internal URLs)").strong());
             ui.add(egui::TextEdit::singleline(&mut c.include).hint_text("Only crawl URLs matching, e.g. /blog/").desired_width(520.0));
@@ -2184,15 +2338,31 @@ impl App {
             });
         self.show_list = open;
         if go {
-            let urls: Vec<String> = self
+            // Like the CLI: skip blank lines, # comments and lines that are not URLs.
+            let lines: Vec<String> = self
                 .settings
                 .list_text
                 .lines()
                 .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
                 .collect();
-            self.show_list = false;
-            self.start(urls, true);
+            let urls: Vec<String> = lines
+                .iter()
+                .filter(|l| crawler::normalize_url(l).is_ok())
+                .cloned()
+                .collect();
+            let skipped = lines.len() - urls.len();
+            if urls.is_empty() {
+                self.error("None of the lines is a valid URL");
+            } else {
+                self.show_list = false;
+                if self.guard(Pending::Start(urls.clone(), true)) {
+                    self.start(urls, true);
+                }
+                if skipped > 0 {
+                    self.toast(format!("Skipped {skipped} line(s) that are not valid URLs"));
+                }
+            }
         }
     }
 
@@ -2269,7 +2439,8 @@ impl App {
         let mut export = false;
         egui::Window::new("Title & description writer")
             .open(&mut open)
-            .default_size([980.0, 560.0])
+            .default_size([1040.0, 560.0])
+            .max_size(ctx.screen_rect().size() - egui::vec2(40.0, 80.0))
             .show(ctx, |ui| {
                 let n = ai::candidates(&self.crawl).len();
                 let engine = if self.settings.ai.provider == Provider::Offline
@@ -2375,7 +2546,7 @@ impl App {
                                         ui.label(
                                             RichText::new(format!("{n} chars · {}", s.source))
                                                 .small()
-                                                .color(if (70..=160).contains(&n) {
+                                                .color(if (70..=155).contains(&n) {
                                                     GOOD
                                                 } else {
                                                     WARNING
@@ -2383,6 +2554,7 @@ impl App {
                                         );
                                     });
                                     ui.vertical(|ui| {
+                                        ui.set_min_width(130.0);
                                         if ui.small_button("Copy title").clicked() {
                                             ui.ctx().copy_text(s.title.clone());
                                         }
@@ -2409,7 +2581,7 @@ impl App {
     fn links_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.show_links;
         let mut export = false;
-        egui::Window::new("Internal link finder").open(&mut open).default_size([980.0, 520.0]).show(ctx, |ui| {
+        egui::Window::new("Internal link finder").open(&mut open).default_size([1100.0, 520.0]).max_size(ctx.screen_rect().size() - egui::vec2(40.0, 80.0)).show(ctx, |ui| {
             ui.label("Pages that mention another page's topic (its H1 or title) in their text but do not link to it yet. Adding these contextual links helps visitors and spreads ranking signals.");
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} opportunities", self.opportunities.len())).strong().color(GOOD));
@@ -2428,7 +2600,11 @@ impl App {
                     }
                     ui.end_row();
                     for o in self.opportunities.iter().take(3000) {
-                        ui.add(egui::Label::new(RichText::new(&o.source_url).small()).wrap());
+                        ui.vertical(|ui| {
+                            ui.set_min_width(240.0);
+                            ui.set_max_width(300.0);
+                            ui.add(egui::Label::new(RichText::new(&o.source_url).small()).wrap());
+                        });
                         ui.label(RichText::new(format!("{} ({}×)", o.phrase, o.mentions)).strong().color(WARNING));
                         ui.vertical(|ui| {
                             ui.set_max_width(280.0);
@@ -2513,8 +2689,9 @@ impl App {
             });
             ui.checkbox(&mut self.compare_ui.ci_baseline, "Compare with the previous run: fail only on new issues, add a job summary and badge");
             let yaml = report::ci_workflow(self.ci_url.trim(), self.ci_level, self.compare_ui.ci_baseline);
-            egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut yaml.as_str()).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+            // No wrapping: a wrapped YAML line looks like broken indentation. Scroll sideways.
+            egui::ScrollArea::both().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(&yaml).monospace()).extend());
             });
             ui.horizontal(|ui| {
                 if ui.button("Copy").clicked() {

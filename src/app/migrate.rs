@@ -54,7 +54,30 @@ impl App {
         } else {
             (&**other, &self.crawl)
         };
-        self.migrate_ui.maps = migrate::propose(old, new);
+        // Targets edited by hand survive a new proposal (Propose again, direction switch).
+        let manual: std::collections::HashMap<String, Mapping> = self
+            .migrate_ui
+            .maps
+            .drain(..)
+            .filter(|m| m.method == Method::Manual)
+            .map(|m| (m.old.clone(), m))
+            .collect();
+        let mut maps = migrate::propose(old, new);
+        for m in &mut maps {
+            if let Some(kept) = manual.get(&m.old) {
+                *m = kept.clone();
+            }
+        }
+        self.migrate_ui.maps = maps;
+    }
+
+    /// Tools menu: reopen the map from this session (with its edits) or pick a crawl to map.
+    pub(super) fn migrate_open(&mut self) {
+        if self.migrate_ui.other.is_some() && !self.migrate_ui.maps.is_empty() {
+            self.migrate_ui.open = true;
+        } else {
+            self.migrate_pick();
+        }
     }
 
     pub(super) fn migrate_dialog(&mut self, ctx: &egui::Context) {
@@ -79,6 +102,7 @@ impl App {
         }
         let mut open = true;
         let (mut rerun, mut save_csv, mut save_snippets) = (false, false, false);
+        let mut pick_other = false;
         let current = self.crawl.start_url.clone();
         let u = &mut self.migrate_ui;
         egui::Window::new("Migration redirect mapper")
@@ -103,8 +127,11 @@ impl App {
                     if ui.checkbox(&mut u.current_is_old, "The current crawl is the old site").changed() {
                         rerun = true;
                     }
-                    if ui.button("Propose again").clicked() {
+                    if ui.button("Propose again").on_hover_text("Targets you edited by hand are kept").clicked() {
                         rerun = true;
+                    }
+                    if ui.button("Load another crawl…").clicked() {
+                        pick_other = true;
                     }
                     ui.separator();
                     ui.add(egui::TextEdit::singleline(&mut u.filter).hint_text("Filter").desired_width(200.0));
@@ -184,6 +211,9 @@ impl App {
         self.migrate_ui.open = open;
         if rerun {
             self.migrate_run();
+        }
+        if pick_other {
+            self.migrate_pick();
         }
         if save_csv {
             self.save_file("redirect_map.csv", "csv", |a| {

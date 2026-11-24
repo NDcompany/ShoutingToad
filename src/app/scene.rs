@@ -156,12 +156,22 @@ impl App {
                 self.start(vec![u], false);
             }
             "list" => self.settings.list_text = arg.replace('|', "\n"),
-            "click" | "rclick" | "move" => {
+            "click" | "rclick" => {
+                // Move first, press on a later frame: a press that arrives with the move is
+                // treated as a drag by windows under the pointer.
+                if let Some(p) = pos(&arg) {
+                    self.scene.pointer = p;
+                    self.scene.events.push(egui::Event::PointerMoved(p));
+                    self.scene.steps.push_front(format!("press{cmd}:{arg}"));
+                    wait = 2;
+                }
+            }
+            "pressclick" | "pressrclick" | "move" => {
                 if let Some(p) = pos(&arg) {
                     self.scene.pointer = p;
                     self.scene.events.push(egui::Event::PointerMoved(p));
                     if cmd != "move" {
-                        let b = if cmd == "rclick" {
+                        let b = if cmd == "pressrclick" {
                             egui::PointerButton::Secondary
                         } else {
                             egui::PointerButton::Primary

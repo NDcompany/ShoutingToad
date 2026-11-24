@@ -1132,12 +1132,18 @@ fn summarize(raw: &HtmlData, snap: &Snapshot, url: &str) -> (Rendered, Vec<Link>
         .or_else(|_| Url::parse(url))
         .expect("rendered URL");
     let r = parse_html(&snap.html, &final_url);
-    let raw_links: HashSet<&str> = raw.links.iter().map(|l| l.url.as_str()).collect();
+    // Compared without the scheme: when the browser upgrades http to https (HSTS), relative
+    // links resolve to https and are not new links.
+    let key = |u: &str| u.split_once("://").map_or(u, |(_, rest)| rest).to_string();
+    let raw_links: HashSet<String> = raw.links.iter().map(|l| key(&l.url)).collect();
     let mut seen = HashSet::new();
     let new: Vec<&Link> = r
         .links
         .iter()
-        .filter(|l| !raw_links.contains(l.url.as_str()) && seen.insert(l.url.as_str()))
+        .filter(|l| {
+            let k = key(&l.url);
+            !raw_links.contains(&k) && seen.insert(k)
+        })
         .collect();
     let mut out = Rendered {
         final_url: snap.final_url.clone(),

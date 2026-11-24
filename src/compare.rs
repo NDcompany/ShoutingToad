@@ -412,12 +412,12 @@ pub fn html_report(a: &Crawl, b: &Crawl, cmp: &Comparison) -> String {
             let kind = c.kind.label().to_lowercase();
             let _ = write!(
                 sections,
-                "<details class=row><summary><span class=\"pill {kind}\">{}</span><span class=\"prio {}\">{}</span><span class=title>{}</span><span class=muted>{}</span><span class=muted>{} URL{} · before {} → after {}</span></summary><div class=body><p>{}</p><p><strong>How to fix:</strong> {}</p><ul class=urls>{urls}</ul></div></details>",
+                "<details class=row><summary><span class=\"pill {kind}\">{}</span><span class=\"prio {}\">{}</span><span class=title>{}: {}</span><span class=muted>{} URL{} · before {} → after {}</span></summary><div class=body><p>{}</p><p><strong>How to fix:</strong> {}</p><ul class=urls>{urls}</ul></div></details>",
                 c.kind.label(),
                 c.priority.label().to_lowercase(),
                 c.priority.label(),
-                esc(&c.name),
                 esc(c.category),
+                esc(&c.name),
                 idx.len(),
                 if idx.len() == 1 { "" } else { "s" },
                 d.fixed.len() + d.persisting.len(),
@@ -525,8 +525,8 @@ footer a {{ color:inherit; }}
 </html>
 "##,
         before_site = esc(&a.start_url),
-        before_date = esc(&a.finished),
-        after_date = esc(&b.finished),
+        before_date = esc(&nice_date(&a.finished)),
+        after_date = esc(&nice_date(&b.finished)),
         c_before = score_color(cmp.score_before),
         c_after = score_color(cmp.score_after),
         s_before = cmp.score_before,
@@ -585,7 +585,7 @@ pub fn markdown_summary(
             .count();
         let _ = writeln!(
             out,
-            "**Health score:** {score}/100 · **URLs:** {} · **Issues:** {issues}\n\nNo baseline crawl to compare with yet: this crawl becomes the baseline.",
+            "**Health score:** {score}/100 · **URLs:** {} · **Issues:** {issues}\n\nNo baseline crawl to compare with yet. Keep this run's crawl.shoutingtoad and pass it with --baseline next time.",
             b.pages.len()
         );
         return out;
@@ -890,6 +890,13 @@ pub fn cli(args: &[String]) -> Result<i32, String> {
         return Ok(2);
     }
     Ok(0)
+}
+
+/// "2026-11-24T06:44:12.690863500+05:30" -> "2026-11-24 06:44".
+fn nice_date(s: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| s.to_string())
 }
 
 #[cfg(test)]

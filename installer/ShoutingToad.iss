@@ -10,6 +10,10 @@
 #ifndef Binary
   #define Binary "..\target\release\shouting-toad.exe"
 #endif
+; Console build: terminals run shouting-toad.com before .exe, so the CLI prints and returns exit codes.
+#ifndef ConsoleBinary
+  #define ConsoleBinary "..\target\release\shouting-toad-console.exe"
+#endif
 
 [Setup]
 AppId={{6F3B2C1E-8D4A-4E5B-9C7F-2A1D0E3B4C5D}
@@ -47,6 +51,7 @@ Name: assoc; Description: "Open .shoutingtoad crawl files with ShoutingToad"; Gr
 
 [Files]
 Source: "{#Binary}"; DestDir: "{app}"; DestName: "shouting-toad.exe"; Flags: ignoreversion
+Source: "{#ConsoleBinary}"; DestDir: "{app}"; DestName: "shouting-toad.com"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 

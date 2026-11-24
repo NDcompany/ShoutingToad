@@ -175,7 +175,7 @@ fn host(u: &str) -> String {
         .unwrap_or_default()
 }
 
-fn bare_host(u: &str) -> String {
+pub fn bare_host(u: &str) -> String {
     host(u).trim_start_matches("www.").to_string()
 }
 

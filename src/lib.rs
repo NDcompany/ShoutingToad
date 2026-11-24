@@ -8,6 +8,7 @@ pub mod cli;
 pub mod compare;
 pub mod crawler;
 pub mod cwv;
+pub mod entry;
 pub mod migrate;
 pub mod model;
 pub mod parse;

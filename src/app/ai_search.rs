@@ -143,7 +143,10 @@ impl App {
                 ui.end_row();
                 for (url, sections, quotable, weakest, flags) in rows.iter() {
                     ui.label(RichText::new(url).small());
-                    let color = if (*quotable as usize) * 2 < *sections as usize {
+                    // Same rule as the ai.low_quotability check: 3+ sections, under half quotable.
+                    let color = if *sections < 3 {
+                        ui.visuals().weak_text_color()
+                    } else if (*quotable as usize) * 2 < *sections as usize {
                         WARNING
                     } else {
                         GOOD

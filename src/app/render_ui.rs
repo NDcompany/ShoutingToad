@@ -69,7 +69,7 @@ fn list(ui: &mut egui::Ui, title: &str, items: &[String], color: egui::Color32) 
 pub(super) fn rendered_tab(ui: &mut egui::Ui, p: &Page) {
     let Some(r) = p.rendered.as_deref() else {
         ui.label(
-            RichText::new("Not rendered. Turn on JavaScript rendering in Configuration → Spider settings, then crawl again.")
+            RichText::new("Not rendered. Turn on JavaScript rendering in Configuration > Spider settings, then crawl again.")
                 .weak(),
         );
         return;

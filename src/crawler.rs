@@ -645,8 +645,15 @@ fn fetch_as(
         if r.status != 429 || sh.stop.load(Ordering::Relaxed) {
             return Ok(r);
         }
+        // Retry-After is seconds or an HTTP date.
         let secs = header(&r.headers, "retry-after")
-            .and_then(|v| v.trim().parse::<u64>().ok())
+            .and_then(|v| {
+                let v = v.trim();
+                v.parse::<u64>().ok().or_else(|| {
+                    let at = chrono::DateTime::parse_from_rfc2822(v).ok()?;
+                    Some((at.timestamp() - chrono::Utc::now().timestamp()).max(1) as u64)
+                })
+            })
             .unwrap_or(5)
             .clamp(1, 30);
         let mut next = sh.next_slot.lock().unwrap();

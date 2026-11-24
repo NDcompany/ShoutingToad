@@ -197,7 +197,7 @@ fn table(ui: &mut egui::Ui, id: &str, phone: Option<&Metrics>, desktop: Option<&
 pub(super) fn vitals_tab(ui: &mut egui::Ui, p: &Page, crawl: &Crawl) {
     match p.cwv.as_deref() {
         None => {
-            ui.label(RichText::new("Not queried. Add a Chrome UX Report API key in Configuration → Core Web Vitals (CrUX)… and fetch.").weak());
+            ui.label(RichText::new("Not queried. Add a Chrome UX Report API key in Configuration > Core Web Vitals (CrUX) API key…, then fetch.").weak());
         }
         Some(c) if !c.has_data() => {
             ui.label("No field data for this URL: it has too few Chrome visitors for the Chrome UX Report.");

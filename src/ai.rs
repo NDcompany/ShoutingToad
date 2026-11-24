@@ -256,6 +256,17 @@ fn topic(p: &Page, brand: &str) -> String {
     })
 }
 
+/// A real sentence rather than menu text: 5-45 words, ends like a sentence, and mostly
+/// lower-case words (navigation is Title Case: "Home All products Books Travel").
+fn prose_like(s: &str) -> bool {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let lower = words
+        .iter()
+        .filter(|w| w.chars().next().is_some_and(|c| c.is_lowercase()))
+        .count();
+    (5..=45).contains(&words.len()) && s.ends_with(['.', '!', '?']) && lower * 2 >= words.len()
+}
+
 /// Deterministic rewrite used when no AI provider is configured.
 pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
     let h = p.html.as_deref();
@@ -268,12 +279,13 @@ pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
     let title = if (30..=60).contains(&title_len) {
         cur_title
     } else {
+        // Keep the whole topic when it fits: drop the brand before cutting the topic.
         let room = 60usize.saturating_sub(brand.chars().count() + 3);
-        let core = cut_words(&topic, room.max(20));
-        if brand.is_empty() || core.to_lowercase().contains(&brand.to_lowercase()) || room < 15 {
-            cut_words(&core, 60)
+        let n = topic.chars().count();
+        if !brand.is_empty() && n <= room && !topic.to_lowercase().contains(&brand.to_lowercase()) {
+            format!("{topic} | {brand}")
         } else {
-            format!("{core} | {brand}")
+            cut_words(&topic, 60)
         }
     };
 
@@ -302,7 +314,7 @@ pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
         let mut d = String::new();
         for sentence in text.split_inclusive(['.', '!', '?']) {
             let s = sentence.trim();
-            if s.split_whitespace().count() < 4 {
+            if !prose_like(s) {
                 continue;
             }
             if d.chars().count() + s.chars().count() > 150 {
@@ -314,7 +326,15 @@ pub fn offline_suggestion(p: &Page, brand: &str) -> (String, String) {
             d.push_str(s);
         }
         if d.chars().count() < 70 {
-            d = cut_words(format!("{topic}. {text}").trim(), 150);
+            // No usable sentences (menus, lists): a short template beats navigation text.
+            d = if brand.is_empty() {
+                cut_words(&format!("{topic}: details, information and more."), 150)
+            } else {
+                cut_words(
+                    &format!("{topic}: browse and find out more on {brand}."),
+                    150,
+                )
+            };
         }
         let mut chars = d.chars();
         match chars.next() {
@@ -704,12 +724,18 @@ pub fn link_opportunities(crawl: &Crawl) -> Vec<LinkOpportunity> {
             if h.links.iter().any(|l| l.url == target.url) {
                 continue;
             }
+            // Show the context in its original case when lower-casing kept the byte offsets.
+            let shown = if h.text.len() == text.len() {
+                h.text.as_str()
+            } else {
+                text
+            };
             let mut a = at.saturating_sub(80);
-            while !text.is_char_boundary(a) {
+            while !shown.is_char_boundary(a) {
                 a -= 1;
             }
-            let mut b = (at + phrase.len() + 80).min(text.len());
-            while !text.is_char_boundary(b) {
+            let mut b = (at + phrase.len() + 80).min(shown.len());
+            while !shown.is_char_boundary(b) {
                 b += 1;
             }
             out.push(LinkOpportunity {
@@ -718,7 +744,10 @@ pub fn link_opportunities(crawl: &Crawl) -> Vec<LinkOpportunity> {
                 target_title: target.title().to_string(),
                 phrase: phrase.clone(),
                 mentions: count,
-                context: format!("…{}…", text[a..b].trim()),
+                context: format!(
+                    "…{}…",
+                    shown[a..b].split_whitespace().collect::<Vec<_>>().join(" ")
+                ),
             });
         }
     }

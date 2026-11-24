@@ -228,7 +228,11 @@ pub fn html(crawl: &Crawl, audit: &Audit) -> String {
             "Not tested" => "muted",
             _ => "pass",
         };
-        let names: Vec<String> = r.checks.iter().map(|&c| esc(&cat[c].name)).collect();
+        let names: Vec<String> = r
+            .checks
+            .iter()
+            .map(|&c| esc(&format!("{}: {}", cat[c].category, cat[c].name)))
+            .collect();
         let _ = write!(
             table,
             "<tr><td><strong>{}</strong> {}</td><td>{}</td><td class={cls}>{st}</td><td class=num>{}</td><td class=num>{}</td><td class=num>{}</td><td class=small>{}</td></tr>",
@@ -249,7 +253,7 @@ pub fn html(crawl: &Crawl, audit: &Audit) -> String {
                 .checks
                 .iter()
                 .filter(|&&c| audit.hits[c].binary_search(&pi).is_ok())
-                .map(|&c| esc(&cat[c].name))
+                .map(|&c| esc(&format!("{}: {}", cat[c].category, cat[c].name)))
                 .collect();
             let u = esc(&crawl.pages[pi].url);
             let _ = write!(

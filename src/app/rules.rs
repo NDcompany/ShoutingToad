@@ -160,7 +160,10 @@ impl App {
             changed = true;
         }
         if changed {
-            self.settings.rule_packs.dedup_by(|a, b| a.path == b.path);
+            let mut seen = std::collections::HashSet::new();
+            self.settings
+                .rule_packs
+                .retain(|p| seen.insert(p.path.clone()));
             self.apply_rule_packs();
         }
         self.rule_packs.open = open;

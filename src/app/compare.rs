@@ -22,6 +22,8 @@ pub(super) struct CompareUi {
 struct View {
     urls_tab: bool,
     filter: String,
+    /// The URL changes tab has its own filter, so one typed on Findings doesn't empty it.
+    url_filter: String,
     /// Issues, Warnings, Opportunities
     kinds: [bool; 3],
     changed_only: bool,
@@ -181,9 +183,13 @@ impl App {
                     );
                     ui.separator();
                     ui.add(
-                        egui::TextEdit::singleline(&mut v.filter)
-                            .hint_text("Filter")
-                            .desired_width(220.0),
+                        egui::TextEdit::singleline(if v.urls_tab {
+                            &mut v.url_filter
+                        } else {
+                            &mut v.filter
+                        })
+                        .hint_text("Filter")
+                        .desired_width(220.0),
                     );
                     if v.urls_tab {
                         for (i, l) in ["Added", "Removed", "Changed"].iter().enumerate() {
@@ -245,6 +251,8 @@ fn findings(ui: &mut egui::Ui, u: &mut View, c: &Comparison, before: &Crawl, aft
     let mut clicked = None;
     let height = (ui.available_height() * 0.55).max(120.0);
     ui.push_id("cmp-findings", |ui| {
+        // Selectable text would take the click instead of the row.
+        ui.style_mut().interaction.selectable_labels = false;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -343,6 +351,8 @@ fn findings(ui: &mut egui::Ui, u: &mut View, c: &Comparison, before: &Crawl, aft
         _ => (&d.persisting, &after.pages),
     };
     ui.push_id("cmp-urls", |ui| {
+        // Selectable text would take the click instead of the row.
+        ui.style_mut().interaction.selectable_labels = false;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, 18.0, idx.len(), |ui, range| {
@@ -356,7 +366,7 @@ fn findings(ui: &mut egui::Ui, u: &mut View, c: &Comparison, before: &Crawl, aft
 }
 
 fn url_changes(ui: &mut egui::Ui, u: &mut View, c: &Comparison) {
-    let key = (u.filter.to_lowercase(), u.url_kinds, 0);
+    let key = (u.url_filter.to_lowercase(), u.url_kinds, 0);
     if u.rows_key != key {
         u.rows = c
             .urls
@@ -384,6 +394,8 @@ fn url_changes(ui: &mut egui::Ui, u: &mut View, c: &Comparison) {
     }
     let rows = &u.rows;
     ui.push_id("cmp-changes", |ui| {
+        // Selectable text would take the click instead of the row.
+        ui.style_mut().interaction.selectable_labels = false;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)

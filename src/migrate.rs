@@ -981,6 +981,11 @@ fn takes_value(opt: &str) -> bool {
             | "--fail-on-new"
             | "--summary-md"
             | "--badge"
+            | "--chrome"
+            | "--render-tabs"
+            | "--crux-key"
+            | "--crux-max-urls"
+            | "--rules"
     )
 }
 

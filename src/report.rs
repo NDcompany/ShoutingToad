@@ -352,7 +352,15 @@ pub fn outlinks_csv_to<W: io::Write>(w: W, crawl: &Crawl) -> io::Result<W> {
         for l in &h.links {
             let dest = ctx.page(&l.url);
             let status = dest.map(|d| d.status.to_string()).unwrap_or_default();
-            let internal = dest.map(|d| d.is_internal).unwrap_or(false);
+            // A link to a URL the crawl did not fetch (depth, limits, exclusions) is still
+            // internal when it is on the source page's site.
+            let internal = dest.map_or_else(
+                || {
+                    p.is_internal
+                        && crate::checks::bare_host(&l.url) == crate::checks::bare_host(&p.url)
+                },
+                |d| d.is_internal,
+            );
             out.row(&[
                 &p.url,
                 &l.url,
@@ -574,12 +582,12 @@ pub fn html_report(crawl: &Crawl, audit: &Audit, client: &str, prepared_by: &str
         }
         let _ = write!(
             rows,
-            "<details class=issue-row><summary><span class=\"pill {kind}\">{}</span><span class=\"prio {}\">{}</span><span class=title>{}</span><span class=cat>{}</span><span class=count>{} URL{} · {:.1}%</span></summary><div class=body><p>{}</p><p><strong>How to fix:</strong> {}</p><ul class=urls>{urls}</ul></div></details>",
+            "<details class=issue-row><summary><span class=\"pill {kind}\">{}</span><span class=\"prio {}\">{}</span><span class=title>{}: {}</span><span class=count>{} URL{} · {:.1}%</span></summary><div class=body><p>{}</p><p><strong>How to fix:</strong> {}</p><ul class=urls>{urls}</ul></div></details>",
             c.kind.label(),
             c.priority.label().to_lowercase(),
             c.priority.label(),
-            esc(&c.name),
             esc(c.category),
+            esc(&c.name),
             hits.len(),
             if hits.len() == 1 { "" } else { "s" },
             hit_share(crawl, hits),
