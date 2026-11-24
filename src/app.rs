@@ -236,6 +236,17 @@ struct OverviewStats {
     kinds: std::collections::BTreeMap<&'static str, usize>,
 }
 
+/// Top-left corner that centres a window of `size` (clamped to the screen) in the app window.
+fn centered(ctx: &egui::Context, size: [f32; 2]) -> egui::Pos2 {
+    let r = ctx.screen_rect();
+    let w = size[0].min(r.width() - 40.0);
+    let h = size[1].min(r.height() - 80.0);
+    egui::pos2(
+        r.center().x - w / 2.0,
+        (r.center().y - h / 2.0).max(r.top() + 40.0),
+    )
+}
+
 /// A table cell that shortens long text (URLs, anchors) so other columns stay visible; the
 /// full text is on hover.
 fn cell(ui: &mut egui::Ui, text: &str, max: usize) -> egui::Response {
@@ -1977,21 +1988,28 @@ impl App {
                     }
                 });
             };
-            let fitted = ui
-                .horizontal_wrapped(|ui| {
-                    for (t, name) in tabs {
-                        if ui.selectable_label(self.insp == t, name).clicked() {
-                            self.insp = t;
-                        }
-                    }
-                    let room = ui.available_width() > 200.0;
-                    if room {
-                        url_buttons(ui);
-                    }
-                    room
+            // Measure the tab labels first: the URL buttons share their row only when it fits.
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x;
+            let tabs_width: f32 = tabs
+                .iter()
+                .map(|(_, n)| {
+                    ui.fonts(|f| f.layout_no_wrap(n.clone(), font.clone(), Color32::WHITE).size().x) + pad
                 })
-                .inner;
-            if !fitted {
+                .sum();
+            // (the estimate runs ~30 px wide, so 190 leaves real room for the ~180 px buttons)
+            let fits = tabs_width + 190.0 <= ui.available_width();
+            ui.horizontal_wrapped(|ui| {
+                for (t, name) in tabs {
+                    if ui.selectable_label(self.insp == t, name).clicked() {
+                        self.insp = t;
+                    }
+                }
+                if fits {
+                    url_buttons(ui);
+                }
+            });
+            if !fits {
                 ui.horizontal(url_buttons);
             }
             ui.separator();
@@ -2240,7 +2258,8 @@ impl App {
 
     fn config_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.show_config;
-        egui::Window::new("Spider settings").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        // Capped width: an auto-sized window grows for one wide frame and wrapped labels then keep it wide.
+        egui::Window::new("Spider settings").open(&mut open).resizable(false).collapsible(false).max_width(540.0).show(ctx, |ui| {
             let c = &mut self.settings.cfg;
             egui::Grid::new("cfg").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
                 ui.label("Max URLs");
@@ -2327,7 +2346,9 @@ impl App {
                     .settings
                     .list_text
                     .lines()
-                    .filter(|l| !l.trim().is_empty())
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .filter(|l| crawler::normalize_url(l).is_ok())
                     .count();
                 if ui
                     .add_enabled(n > 0, egui::Button::new(format!("Audit {n} URLs")))
@@ -2440,6 +2461,7 @@ impl App {
         egui::Window::new("Title & description writer")
             .open(&mut open)
             .default_size([1040.0, 560.0])
+            .default_pos(centered(ctx, [1040.0, 560.0]))
             .max_size(ctx.screen_rect().size() - egui::vec2(40.0, 80.0))
             .show(ctx, |ui| {
                 let n = ai::candidates(&self.crawl).len();
@@ -2581,7 +2603,7 @@ impl App {
     fn links_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.show_links;
         let mut export = false;
-        egui::Window::new("Internal link finder").open(&mut open).default_size([1100.0, 520.0]).max_size(ctx.screen_rect().size() - egui::vec2(40.0, 80.0)).show(ctx, |ui| {
+        egui::Window::new("Internal link finder").open(&mut open).default_size([1180.0, 540.0]).default_pos(centered(ctx, [1180.0, 540.0])).max_size(ctx.screen_rect().size() - egui::vec2(40.0, 80.0)).show(ctx, |ui| {
             ui.label("Pages that mention another page's topic (its H1 or title) in their text but do not link to it yet. Adding these contextual links helps visitors and spreads ranking signals.");
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} opportunities", self.opportunities.len())).strong().color(GOOD));

@@ -27,8 +27,9 @@ if (-not $source) {
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item $source "$InstallDir\shouting-toad.exe" -Force
 # Console build: terminals prefer .com, so CLI output and exit codes work in cmd/PowerShell.
-$console = Join-Path (Split-Path $source) 'shouting-toad.com'
-if (Test-Path $console) { Copy-Item $console "$InstallDir\shouting-toad.com" -Force }
+# (a release zip has shouting-toad.com; a source build has shouting-toad-console.exe in the target release folder)
+$console = @('shouting-toad.com', 'shouting-toad-console.exe') | ForEach-Object { Join-Path (Split-Path $source) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($console) { Copy-Item $console "$InstallDir\shouting-toad.com" -Force }
 $uninstaller = @("$PSScriptRoot\uninstall_windows.ps1", "$tmp\uninstall_windows.ps1") | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if ($uninstaller) { Copy-Item $uninstaller "$InstallDir\uninstall_windows.ps1" -Force }
 
