@@ -1279,7 +1279,7 @@ impl App {
                         self.show_catalogue = true;
                         ui.close_menu();
                     }
-                    ui.hyperlink_to("Documentation", report::REPO);
+                    ui.hyperlink_to("User guide", format!("{}/wiki", report::REPO));
                     ui.hyperlink_to("Report a problem", format!("{}/issues", report::REPO));
                     ui.separator();
                     if ui.button("About ShoutingToad").clicked() {

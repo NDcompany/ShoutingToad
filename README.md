@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/NDcompany/ShoutingToad/releases/latest"><b>Download</b></a> ·
+  <a href="https://github.com/NDcompany/ShoutingToad/wiki"><b>User guide</b></a> ·
   <a href="#features">Features</a> ·
   <a href="#command-line-and-ci">Command line &amp; CI</a> ·
   <a href="#what-it-checks">What it checks</a> ·
