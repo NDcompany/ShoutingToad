@@ -4,11 +4,23 @@
 use super::*;
 use crate::render::Rendered;
 
-/// Raw data and a successful render of an internal 200 HTML page.
+/// Raw data and a successful render of an internal 200 HTML page. A render that ended on
+/// another host or path (meta refresh, JavaScript redirect) shows a different page, so it is
+/// not compared; a query or fragment change (pushState) still is.
 fn both(p: &Page) -> Option<(&HtmlData, &Rendered)> {
     let h = hd(p)?;
     let r = p.rendered.as_deref()?;
-    r.error.is_none().then_some((h, r))
+    (r.error.is_none() && same_page(&p.url, &r.final_url)).then_some((h, r))
+}
+
+fn same_page(a: &str, b: &str) -> bool {
+    match (Url::parse(a), Url::parse(b)) {
+        (Ok(a), Ok(b)) => {
+            a.host_str() == b.host_str()
+                && a.path().trim_end_matches('/') == b.path().trim_end_matches('/')
+        }
+        _ => true,
+    }
 }
 
 /// At least 50 words, and a quarter of the rendered text, appear only after JavaScript.
@@ -86,5 +98,9 @@ mod tests {
         assert!(js_content_gap(1000, 1400));
         assert!(!js_content_gap(500, 400));
         assert_eq!(directives("NOINDEX, follow"), directives("follow,noindex"));
+        // meta refresh /docs -> /overview: different page; pushState ?id=1: same page
+        assert!(!same_page("https://a.dev/docs", "https://a.dev/overview"));
+        assert!(same_page("https://a.dev/play", "https://a.dev/play?id=1#x"));
+        assert!(same_page("https://a.dev/play", "https://a.dev/play/"));
     }
 }

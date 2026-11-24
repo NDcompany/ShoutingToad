@@ -85,9 +85,28 @@ pub fn ih(p: &Page) -> bool {
     p.is_internal && p.status == 200 && p.html.is_some()
 }
 
-/// HTML data of an internal 200 HTML page.
+/// Target of a `<meta http-equiv="refresh" content="N; url=...">` that leads to another URL.
+pub fn meta_redirect(p: &Page) -> Option<url::Url> {
+    let r = p.html.as_deref()?.meta_refresh.as_deref()?;
+    let at = r.to_ascii_lowercase().find("url=")?;
+    let target = r[at + 4..].trim().trim_matches(['\'', '"']);
+    let base = url::Url::parse(&p.url).ok()?;
+    let to = base.join(target).ok()?;
+    let key = |u: &url::Url| {
+        format!(
+            "{}{}?{}",
+            u.host_str().unwrap_or(""),
+            u.path().trim_end_matches('/'),
+            u.query().unwrap_or("")
+        )
+    };
+    (key(&to) != key(&base)).then_some(to)
+}
+
+/// HTML data of an internal 200 HTML page that is not a meta refresh redirect (Google treats
+/// those as redirects, so on-page checks would only report the stub).
 pub fn hd(p: &Page) -> Option<&HtmlData> {
-    if ih(p) {
+    if ih(p) && meta_redirect(p).is_none() {
         p.html.as_deref()
     } else {
         None
@@ -100,7 +119,7 @@ pub fn self_canonical(p: &Page) -> bool {
 }
 
 pub fn indexable(p: &Page) -> bool {
-    ih(p) && !p.is_noindex() && self_canonical(p) && !p.blocked_by_robots
+    hd(p).is_some() && !p.is_noindex() && self_canonical(p) && !p.blocked_by_robots
 }
 
 /// HTML data of an indexable page.
@@ -117,7 +136,7 @@ pub fn indexability_label(p: &Page) -> &'static str {
         "Blocked by robots.txt"
     } else if p.status == 0 {
         "No Response"
-    } else if p.is_redirect() {
+    } else if p.is_redirect() || (ih(p) && meta_redirect(p).is_some()) {
         "Redirected"
     } else if (400..500).contains(&p.status) {
         "Client Error"
@@ -580,5 +599,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(run(&crawl).health_score(&crawl), 0);
+    }
+
+    #[test]
+    fn meta_refresh_to_another_url_is_a_redirect() {
+        let page = |refresh: &str| Page {
+            url: "https://e.com/docs".into(),
+            status: 200,
+            is_internal: true,
+            html: Some(Box::new(HtmlData {
+                meta_refresh: Some(refresh.into()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let stub = page("0; url=/overview");
+        assert_eq!(
+            meta_redirect(&stub).unwrap().as_str(),
+            "https://e.com/overview"
+        );
+        assert!(hd(&stub).is_none() && !indexable(&stub));
+        assert_eq!(indexability_label(&stub), "Redirected");
+        for reload in ["30", "5; URL='/docs/'"] {
+            assert!(meta_redirect(&page(reload)).is_none() && hd(&page(reload)).is_some());
+        }
     }
 }

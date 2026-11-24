@@ -1,7 +1,9 @@
 //! The catalogue of SEO and UX checks. Every entry carries its own test,
 //! so the number of checks listed is exactly the number the engine runs.
 
-use crate::audit::{hd, ih, ihd, indexable, pixel_width, self_canonical, Ctx, Kind, Priority};
+use crate::audit::{
+    hd, ih, ihd, indexable, meta_redirect, pixel_width, self_canonical, Ctx, Kind, Priority,
+};
 use crate::model::{HtmlData, Page, Source};
 use regex::Regex;
 use serde_json::Value;
@@ -843,11 +845,11 @@ fn redirects(v: &mut Vec<Check>) {
     add!(v, "redirects.meta_refresh", CAT, Warning, Medium, "Meta Refresh Redirect",
         "The page redirects with <meta http-equiv=\"refresh\">. It is slower, worse for accessibility, and a weaker signal than a server redirect.",
         "Replace it with a 301 server-side redirect.",
-        |p, _| hd(p).and_then(|h| h.meta_refresh.as_deref()).is_some_and(|r| r.to_ascii_lowercase().contains("url=")));
+        |p, _| ih(p) && meta_redirect(p).is_some());
     add!(v, "redirects.meta_refresh_reload", CAT, Warning, Low, "Meta Refresh Page Reload",
         "The page reloads itself on a timer, which disorients screen-reader users and wastes resources.",
         "Remove the auto-refresh, or use JavaScript updates for live content.",
-        |p, _| hd(p).and_then(|h| h.meta_refresh.as_deref()).is_some_and(|r| !r.to_ascii_lowercase().contains("url=")));
+        |p, _| hd(p).is_some_and(|h| h.meta_refresh.is_some()));
     add!(v, "redirects.javascript", CAT, Warning, Medium, "JavaScript Redirect",
         "Inline script changes window.location. Search engines only see it after rendering, and may not pass signals reliably.",
         "Use a server-side 301 redirect instead.",
